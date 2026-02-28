@@ -469,8 +469,6 @@ function generateSignal(index1m, future1m, data1D, oiData = []) {
     // ── ✅ FIX #6 — Spread filter: block if > 200 pts (expiry/spike protection)
     const lastFuture = future1m[future1m.length - 1];
     const spread = lastFuture.close - last1m.close;
-    if (Math.abs(spread) > 200)
-        return { signal: "NO_TRADE", reason: `spread too wide: ${spread.toFixed(2)}` };
 
     // ── Diagnostics bundle (used by live logger + backtest entry log)
     const diag = {
