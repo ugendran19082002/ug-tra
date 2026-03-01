@@ -1,9 +1,10 @@
 import { logger, tradeLogger, getISTTime } from "./logger.js";
-import { sleep, getDailyFromDate } from "./helpers.js";
+import { sleep, getDailyFromDate, calculateOptionLevels } from "./helpers.js";
 import { getHistorical, getFuture, format } from "./api/historical.js";
 import { getATMOptionTokens, getLTP } from "./getStrick.js";
 import { generateSignal } from "./signals.js";
 import { sendTelegram } from "./telegram.js";
+import { executeOrder } from "./order.js";
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  ENTRY ENGINE (live)
@@ -74,6 +75,7 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
 
     // ── ATM Option Token fetch
     let optionToken = null, optionSymbol = null, optionLTP = null, atmStrike = null, optionExpiry = null;
+    let optionSL = null, optionTarget = null;
 
     try {
         const atm = await getATMOptionTokens("SENSEX", entryPrice);
@@ -94,6 +96,17 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
             if (ltpData.length) {
                 optionLTP = parseFloat(ltpData[0].ltp.toFixed(2));
                 logger.info(`💰 Option LTP  : ${optionLTP}`);
+
+                // ── Option-level SL & Target via delta/gamma model
+                const levels = calculateOptionLevels({
+                    indexEntry: entryPrice,
+                    indexSL: slPrice,
+                    indexTarget: tgtPrice,
+                    optionLTP,
+                });
+                optionSL = parseFloat(levels.optionSL.toFixed(2));
+                optionTarget = parseFloat(levels.optionTarget.toFixed(2));
+                logger.info(`📐 Option SL   : ${optionSL}  | Option TGT: ${optionTarget}`);
             } else {
                 logger.warn("⚠ Option LTP fetch returned empty");
             }
@@ -106,7 +119,7 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
 
     // ── Telegram message
     const optionLine = optionToken
-        ? `\n━━━━━━━━━━━━━━━━━━\n🏷 Option Info\nSymbol      : ${optionSymbol}\nToken       : ${optionToken}\nATM Strike  : ${atmStrike}\nExpiry      : ${optionExpiry}\nOption LTP  : ${optionLTP ?? "N/A"}`
+        ? `\n━━━━━━━━━━━━━━━━━━\n🏷 Option Info\nSymbol      : ${optionSymbol}\nToken       : ${optionToken}\nATM Strike  : ${atmStrike}\nExpiry      : ${optionExpiry}\nOption LTP  : ${optionLTP ?? "N/A"}\nOption SL   : ${optionSL ?? "N/A"}\nOption TGT  : ${optionTarget ?? "N/A"}`
         : "";
 
     const msg = isPE ? `
@@ -128,6 +141,8 @@ Entry       : ${entryPrice}
 Stop Loss   : ${slPrice}  (${r.dynamicSL} pts ⬆)
 Target      : ${tgtPrice}  (${r.dynamicTGT} pts ⬇)
 Risk:Reward : 1 : ${riskReward}
+Option SL   : ${optionSL ?? "N/A"}
+Option TGT  : ${optionTarget ?? "N/A"}
 ${optionLine}
 ━━━━━━━━━━━━━━━━━━
 📌 Conditions
@@ -161,6 +176,8 @@ Entry       : ${entryPrice}
 Stop Loss   : ${slPrice}  (${r.dynamicSL} pts ⬇)
 Target      : ${tgtPrice}  (${r.dynamicTGT} pts ⬆)
 Risk:Reward : 1 : ${riskReward}
+Option SL   : ${optionSL ?? "N/A"}
+Option TGT  : ${optionTarget ?? "N/A"}
 ${optionLine}
 ━━━━━━━━━━━━━━━━━━
 📌 Conditions
@@ -198,11 +215,17 @@ Volume OK   : ${r.volConfirm}
         optionToken,
         optionSymbol,
         optionLTP,
+        optionSL,
+        optionTarget,
         atmStrike,
         optionExpiry,
     };
 
     tradeLogger.info(msg);
     await sendTelegram(msg);
+
+    // ── Place / replace bracket order
+    await executeOrder(jwt, signalObj);
+
     return signalObj;
 }

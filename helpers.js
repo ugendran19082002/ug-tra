@@ -71,3 +71,38 @@ export function isMarketOpen() {
     const mins = h * 60 + m;
     return mins >= (9 * 60 + 15) && mins <= (15 * 60 + 30);
 }
+
+
+export function calculateOptionLevels({
+    indexEntry,
+    indexSL,
+    indexTarget,
+    optionLTP,
+    delta = 0.49,
+    gamma = 0.0007,
+}) {
+    // 1️⃣ Index Moves
+    const indexSLMove = Math.abs(indexSL - indexEntry);
+    const indexTargetMove = Math.abs(indexEntry - indexTarget);
+
+    // 2️⃣ SL Side Delta Adjust
+    const deltaChangeSL = gamma * indexSLMove;
+    const newDeltaSL = delta + deltaChangeSL;
+    const avgDeltaSL = (delta + newDeltaSL) / 2;
+
+    const optionSLMove = indexSLMove * avgDeltaSL;
+    const optionSL = optionLTP - optionSLMove;
+
+    // 3️⃣ Target Side Delta Adjust
+    const deltaChangeTarget = gamma * indexTargetMove;
+    const newDeltaTarget = delta + deltaChangeTarget;
+    const avgDeltaTarget = (delta + newDeltaTarget) / 2;
+
+    const optionTargetMove = indexTargetMove * avgDeltaTarget;
+    const optionTarget = optionLTP + optionTargetMove;
+
+    return {
+        optionSL: optionSLMove,
+        optionTarget: optionTargetMove
+    };
+}
