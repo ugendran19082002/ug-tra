@@ -51,7 +51,7 @@ async function main() {
             logger.info(`🔄 Loop #${iteration} | IST: ${getISTTime()}`);
 
             const liveFrom = getTodayFromDate();
-            const liveTo = "2026-02-27 15:05"; // ✅ FIX: replace with formatDateTime() for real live use
+            const liveTo = "2026-02-27 15:30"; // ✅ FIX: replace with formatDateTime() for real live use
 
             logger.info(`📅 Window: ${liveFrom} → ${liveTo}`);
 

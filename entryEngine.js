@@ -20,6 +20,8 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
     const raw1D = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_DAY", getDailyFromDate(), todate);
     await sleep(300);
     const futureRaw1m = await getFuture(futureToken, fromdate, todate);
+    // const futureRaw1m = await getHistorical(jwt, "BFO", futureToken, "ONE_MINUTE", fromdate, todate);
+
     await sleep(300);
 
     if (!indexRaw1m.length || !futureRaw1m.length) {

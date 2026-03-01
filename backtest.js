@@ -52,6 +52,7 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     await sleep(500);
     logger.info("📥 Fetching 1m future...");
     const futureRaw1m = await getFuture(futureToken, btFrom, btTo);
+    // const futureRaw1m = await getHistorical(jwt, "BFO", futureToken, "ONE_MINUTE", fromdate, todate);
 
     if (!indexRaw1m.length || !futureRaw1m.length) {
         logger.error("❌ No data. Check API credentials or date range.");

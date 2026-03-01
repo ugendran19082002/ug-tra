@@ -17,8 +17,16 @@ export async function getHistorical(jwt, exchange, token, interval, fromdate, to
             body,
             { headers: buildHeaders(jwt) }
         );
-        logger.info(`📈 ${interval} candles: ${res.data.data?.length || 0}`);
-        return res.data.data;
+
+        const candles = res.data.data ?? [];
+        candles.sort((a, b) => new Date(a[0]) - new Date(b[0]));
+        logger.info(`📈 ${interval} candles: ${candles.length}`);
+
+        if (checkLastCandleStaleness(candles, "index", logger, 5)) {
+            return [];
+        }
+
+        return candles;
 
     } catch (err) {
         if (err.response?.status === 403 && retries > 0) {
@@ -51,9 +59,15 @@ export async function getFuture(token, fromdate, todate, retries = 3) {
         });
 
         const candles = res.data?.data?.candles || [];
+        candles.sort((a, b) => new Date(a[0]) - new Date(b[0]));
 
         if (!candles.length) {
             logger.warn("⚠ No future candles returned");
+            return [];
+        }
+
+
+        if (checkLastCandleStaleness(candles, "future", logger, 5)) {
             return [];
         }
 
@@ -83,3 +97,40 @@ export const format = raw => raw.map(c => ({
     volume: c[5],
     oi: c[6] ?? 0
 }));
+
+export function checkLastCandleStaleness(
+    candles,
+    type,
+    logger,
+    maxAgeMinutes = 10
+) {
+    if (!candles?.length) {
+        logger.warn(`⚠ No ${type} candles available`);
+        return true;
+    }
+
+    const lastRaw = candles.at(-1)[0];
+    const lastCandleTime = new Date(lastRaw);
+    const now = new Date();
+
+    const ageMinutes = (now - lastCandleTime) / (1000 * 60);
+
+    logger.info(
+        `🕒 ${type} Last Candle IST : ${lastCandleTime.toLocaleString("en-IN", {
+            timeZone: "Asia/Kolkata",
+            hour12: false
+        })
+        }`
+    );
+
+    logger.info(`⏳ ${type} Candle Age : ${ageMinutes.toFixed(2)} mins`);
+
+    if (ageMinutes > maxAgeMinutes) {
+        logger.warn(
+            `⚠ ${type} candle stale (${ageMinutes.toFixed(2)} mins old)`
+        );
+        return true;
+    }
+
+    return false;
+}
