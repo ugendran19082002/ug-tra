@@ -818,14 +818,14 @@ async function backtest(index1mAll, future1mAll, data1D, options = {}) {
     // ── Trade-by-trade table
     btLogger.info("");
     btLogger.info("  TRADE LOG");
-    btLogger.info("  " + "─".repeat(90));
+    btLogger.info("  " + "─".repeat(130));
     btLogger.info(
         "  " +
         "  #".padEnd(5) + "Type".padEnd(5) + "Entry Price".padEnd(14) +
         "Exit Price".padEnd(13) + "PnL".padEnd(12) + "Exit".padEnd(7) +
-        "Bars".padEnd(7) + "Entry Time"
+        "Bars".padEnd(7) + "Entry Time".padEnd(30) + "Exit Time"
     );
-    btLogger.info("  " + "─".repeat(90));
+    btLogger.info("  " + "─".repeat(130));
 
     trades.forEach((t, idx) => {
         const pnlStr = (t.pnl >= 0 ? "+" : "") + t.pnl.toFixed(2);
@@ -835,7 +835,8 @@ async function backtest(index1mAll, future1mAll, data1D, options = {}) {
             String(t.entryPrice).padEnd(14) + String(t.exitPrice).padEnd(13) +
             pnlStr.padEnd(12) + t.exitReason.padEnd(7) +
             String(t.exitBar - t.entryBar).padEnd(7) +
-            getISTTime(new Date(t.entryTime))
+            getISTTime(new Date(t.entryTime)).padEnd(30) +
+            getISTTime(new Date(t.exitTime))
         );
     });
 
@@ -911,7 +912,7 @@ async function main() {
         await backtest(alignedIndex, alignedFuture, data1D, {
             slPoints: parseInt(process.env.BT_SL ?? "80"),
             tgtPoints: parseInt(process.env.BT_TGT ?? "200"),
-            startBar: 15,
+            startBar: 30,
         });
 
         logger.info("✅ Done. See backtest.log");

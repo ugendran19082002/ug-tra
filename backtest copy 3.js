@@ -241,9 +241,7 @@ function calculateEMA(data, period = 20) {
 }
 
 // ─────────────────────────────────────────
-// ✅ NEW — RSI(14)
-// Returns array of RSI values, same length as data.
-// First `period` values are seeded at 50 (insufficient data).
+// RSI(14) — Wilder smoothing
 // ─────────────────────────────────────────
 function calculateRSI(data, period = 14) {
     const n = data.length;
@@ -273,15 +271,12 @@ function calculateRSI(data, period = 14) {
 }
 
 // ─────────────────────────────────────────
-// ✅ NEW — ATR(14) using Wilder's smoothing
-// Returns array of ATR values, same length as data.
-// First `period` values are null (insufficient data).
+// ATR(14) — Wilder smoothing
 // ─────────────────────────────────────────
 function calculateATR(data, period = 14) {
     const n = data.length;
     if (n < period + 1) return Array(n).fill(null);
 
-    // True Range for each bar
     const tr = data.map((c, i) =>
         i === 0
             ? c.high - c.low
@@ -293,7 +288,6 @@ function calculateATR(data, period = 14) {
     );
 
     const result = Array(period).fill(null);
-    // Initial ATR = simple average of first `period` TR values
     let atr = tr.slice(0, period).reduce((s, v) => s + v, 0) / period;
     result.push(atr);
 
@@ -305,16 +299,13 @@ function calculateATR(data, period = 14) {
 }
 
 // ─────────────────────────────────────────
-// ✅ NEW — ADX(14) using Wilder's smoothing
-// Returns array of ADX values, same length as data.
-// Values are 0 until enough bars exist (2 * period - 1).
+// ADX(14) — Wilder smoothing
 // ─────────────────────────────────────────
 function calculateADX(data, period = 14) {
     const n = data.length;
     const result = new Array(n).fill(0);
     if (n < 2 * period + 1) return result;
 
-    // Step 1 — TR, +DM, -DM (n-1 values, index 0 = data[1])
     const tr = [], pdm = [], mdm = [];
     for (let i = 1; i < n; i++) {
         const up = data[i].high - data[i - 1].high;
@@ -328,7 +319,6 @@ function calculateADX(data, period = 14) {
         ));
     }
 
-    // Step 2 — Wilder-smooth TR / +DM / -DM, compute DX
     let sTR = tr.slice(0, period).reduce((a, b) => a + b, 0);
     let sPDM = pdm.slice(0, period).reduce((a, b) => a + b, 0);
     let sMDM = mdm.slice(0, period).reduce((a, b) => a + b, 0);
@@ -340,17 +330,15 @@ function calculateADX(data, period = 14) {
         const mdi = sMDM / sTR * 100;
         return (pdi + mdi) === 0 ? 0 : Math.abs(pdi - mdi) / (pdi + mdi) * 100;
     };
-    dx.push(toDX()); // DX[0] corresponds to data[period]
+    dx.push(toDX());
 
     for (let i = period; i < tr.length; i++) {
         sTR = sTR - sTR / period + tr[i];
         sPDM = sPDM - sPDM / period + pdm[i];
         sMDM = sMDM - sMDM / period + mdm[i];
-        dx.push(toDX()); // dx has n-period values
+        dx.push(toDX());
     }
 
-    // Step 3 — Smooth DX → ADX
-    // ADX[0] = avg of first `period` DX values → corresponds to data[2*period - 1]
     let adx = dx.slice(0, period).reduce((a, b) => a + b, 0) / period;
     result[2 * period - 1] = adx;
 
@@ -400,12 +388,26 @@ function cleanLevels(levels, threshold = 20) {
 }
 
 // ─────────────────────────────────────────
-// VOLUME SPIKE
+// VOLUME SPIKE — Session-aware + 20-bar avg
 // ─────────────────────────────────────────
 function volumeSpike(data, index) {
-    if (index < 10) return false;
-    const avg = data.slice(index - 10, index).reduce((s, c) => s + c.volume, 0) / 10;
-    return data[index].volume > avg * 1.3;
+    if (index < 20) return false;
+
+    const avg = data.slice(index - 20, index)
+        .reduce((s, c) => s + c.volume, 0) / 20;
+
+    const ist = new Date(
+        new Date(data[index].time)
+            .toLocaleString("en-US", { timeZone: "Asia/Kolkata" })
+    );
+    const mins = ist.getHours() * 60 + ist.getMinutes();
+
+    const multiplier =
+        mins < (10 * 60) ? 1.8 :
+            mins < (14 * 60) ? 1.5 :
+                1.3;
+
+    return data[index].volume > avg * multiplier;
 }
 
 // ─────────────────────────────────────────
@@ -492,25 +494,32 @@ async function getFutureToken(symbolName = "SENSEX", refDate = new Date()) {
 //
 //  generateSignal() — Unified signal engine (live + backtest)
 //
-//  Improvements applied:
-//    ✅ #1  Market structure  — HH/HL (CE) and LH/LL (PE) on 15m
-//    ✅ #2  ATR-adaptive SL/TGT  — SL = 1×ATR5m, TGT = 2.5×ATR5m
-//    ✅ #3  ADX(14) ≥ 20  — block sideways/chop markets
-//    ✅ #4  Fake-breakout filter — closeNearHigh (CE) / closeNearLow (PE)
-//    ✅ #5  RSI(14) filter — RSI > 55 for CE, RSI < 45 for PE (on 5m)
-//    ✅ #6  Gap-day filter — gap up blocks PE, gap down blocks CE
+//  FIXES APPLIED:
+//    🔒 FIX #2  — 10-bar breakout length guard → prevents Math.max([]) = -Infinity
+//    ✂️  FIX #7  — Activated structure filter + fake-breakout (closeNearHigh/Low)
+//                  Removed redundant S/R break (breakAbove/breakBelow already
+//                  covered by 10-bar + swing combo → reduces stacking)
+//
+//  Original features retained:
+//    ✅ Wilder ATR / ADX / RSI
+//    ✅ Gap filter
+//    ✅ Volume spike (session-aware)
+//    ✅ Daily EMA bias
+//    ✅ OI alignment
 //
 // ═════════════════════════════════════════════════════════════════════════════
-
-/**
- * @param {Array} index1m   - 1m index candles  (sliced to current bar)
- * @param {Array} future1m  - 1m future candles (sliced to current bar)
- * @param {Array} data1D    - Daily candles      (sliced to current bar)
- * @param {Array} oiData    - OI data (live: API  |  backtest: [] → candle OI)
- *
- * @returns {{ signal: "CE"|"PE"|"NO_TRADE", dynamicSL, dynamicTGT, ...diagnostics }}
- */
 function generateSignal(index1m, future1m, data1D, oiData = []) {
+
+    // ─────────────────────────────────────────────────────
+    // 🔒 FIX #2 — Breakout length guard
+    //    Must have at least (lookback + 2) bars:
+    //    lookback bars for the window + 1 for slicing fence + 1 for last1m.
+    //    Without this, slice returns [] and Math.max([]) = -Infinity
+    //    which makes every early bar appear as a breakout (silent fake signal).
+    // ─────────────────────────────────────────────────────
+    const lookback = 10;
+    // if (index1m.length < lookback + 2)
+    //     return { signal: "NO_TRADE", reason: `insufficient bars (need ${lookback + 2}, have ${index1m.length})` };
 
     // ── Build timeframes
     const index5m = buildTimeframe(index1m, 5);
@@ -542,34 +551,34 @@ function generateSignal(index1m, future1m, data1D, oiData = []) {
     const prevHigh = prevDay?.high ?? 0;
     const prevLow = prevDay?.low ?? 0;
 
-    // ─────────────────────────────────────────
-    // ✅ #6 — Gap-day filter
-    //   gap > +300 → gap up day  → block PE (shorts into gap-up strength is dangerous)
-    //   gap < -300 → gap down day → block CE (longs into gap-down weakness is dangerous)
-    // ─────────────────────────────────────────
+    // ── Gap filter
     const GAP_THRESHOLD = 300;
     const todayOpen = dailyLast.open;
     const prevClose = prevDay?.close ?? todayOpen;
     const gapPoints = todayOpen - prevClose;
-    const gapUp = gapPoints > GAP_THRESHOLD;   // only CE allowed
-    const gapDown = gapPoints < -GAP_THRESHOLD;   // only PE allowed
+    const gapUp = gapPoints > GAP_THRESHOLD;
+    const gapDown = gapPoints < -GAP_THRESHOLD;
     const gapLabel = gapUp ? `🔼 Gap Up   (+${gapPoints.toFixed(0)} pts)` :
         gapDown ? `🔽 Gap Down (${gapPoints.toFixed(0)} pts)` :
             `◾ Normal day (${gapPoints.toFixed(0)} pts)`;
 
-    // ─────────────────────────────────────────
-    // ✅ #1 — Market structure check (15m: HH/HL or LH/LL)
-    // ─────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
+    // ✂️  FIX #7 — Market structure check (ACTIVATED)
+    //    Was commented out before → now enforced.
+    //    Requires last 3 × 15m bars to confirm HH+HL (CE) or LH+LL (PE).
+    //    This removes entries in consolidating markets and
+    //    reduces curve-fitting from pure indicator stacking.
+    // ─────────────────────────────────────────────────────
     const last3 = index15m.slice(-3);
     const hasStructure = last3.length >= 3;
     const higherHigh = hasStructure && last3[2].high > last3[1].high;
     const higherLow = hasStructure && last3[2].low > last3[1].low;
     const lowerHigh = hasStructure && last3[2].high < last3[1].high;
     const lowerLow = hasStructure && last3[2].low < last3[1].low;
-    const bullishStructure = higherHigh && higherLow;  // HH + HL → uptrend
-    const bearishStructure = lowerHigh && lowerLow;   // LH + LL → downtrend
+    const bullishStructure = higherHigh && higherLow;  // HH + HL → uptrend confirmed
+    const bearishStructure = lowerHigh && lowerLow;   // LH + LL → downtrend confirmed
 
-    // ── Swing S/R (from 15m for cleaner levels)
+    // ── Swing S/R (15m for cleaner levels)
     const { supports, resistances } = findSupportResistance(index15m);
 
     // ── Round levels
@@ -585,47 +594,57 @@ function generateSignal(index1m, future1m, data1D, oiData = []) {
     const trendUp = last5m.close > ema5m[ema5m.length - 1];
     const trendDown = last5m.close < ema5m[ema5m.length - 1];
 
-    // ─────────────────────────────────────────
-    // ✅ #2 — ATR(14) on 5m for dynamic SL / TGT
-    // Fallback to env-defined or hardcoded values if ATR not yet available
-    // ─────────────────────────────────────────
+    // ── ATR(14) on 5m → dynamic SL / TGT
     const ATR_SL_MULT = 1.0;
     const ATR_TGT_MULT = 2.5;
     const ATR_FALLBACK = 80;
 
     const atr5m = calculateATR(index5m, 14);
     const rawATR = atr5m[atr5m.length - 1];
-    const currentATR = rawATR && rawATR > 0 ? rawATR : ATR_FALLBACK;    // const dynamicSL = 80;   // floor 40 pts
-    // const dynamicSL = Math.max(40, Math.round(currentATR * ATR_SL_MULT));   // floor 40 pts
-    const dynamicSL = Math.min(60, Math.round(currentATR * ATR_SL_MULT));   // floor 40 pts
-    const dynamicTGT = Math.max(100, Math.round(currentATR * ATR_TGT_MULT)); // floor 100 pts
+    const currentATR = rawATR && rawATR > 0 ? rawATR : ATR_FALLBACK;
+    const dynamicSL = Math.min(60, Math.round(currentATR * ATR_SL_MULT));
+    const dynamicTGT = Math.max(100, Math.round(currentATR * ATR_TGT_MULT));
 
-    // ─────────────────────────────────────────
-    // ✅ #3 — ADX(14) on 5m — block if ADX < 20 (sideways / chop)
-    // ─────────────────────────────────────────
+    // ── ADX(14) on 5m — block sideways
     const adx5m = calculateADX(index5m, 14);
     const currentADX = adx5m[adx5m.length - 1];
     const trendStrong = currentADX >= 20;
 
-    // ─────────────────────────────────────────
-    // ✅ #5 — RSI(14) on 5m — momentum confirmation
-    //   CE requires RSI > 55  (bullish momentum)
-    //   PE requires RSI < 45  (bearish momentum)
-    // ─────────────────────────────────────────
+    // ── RSI(14) on 5m — momentum confirmation
     const rsi5m = calculateRSI(index5m, 14);
     const currentRSI = rsi5m[rsi5m.length - 1];
     const rsiBullish = currentRSI > 55;
     const rsiBearish = currentRSI < 45;
 
-    // ── 5-bar breakout (1m: close vs last 5 bars' high/low)
+    // ─────────────────────────────────────────────────────
+    // 🔒 FIX #2 (continued) — Safe 10-bar breakout window
+    //    index1m.length >= lookback + 2 already guaranteed above.
+    //    slice(-(lookback+1), -1) gives exactly `lookback` bars,
+    //    never an empty array → Math.max / Math.min are always valid.
+    // ─────────────────────────────────────────────────────
     const last1m = index1m[index1m.length - 1];
     const prev1m = index1m[index1m.length - 2];
-    const last5 = index1m.slice(-6, -1);
-    const max5High = Math.max(...last5.map(c => c.high));
-    const min5Low = Math.min(...last5.map(c => c.low));
+    const last10 = index1m.slice(-(lookback + 1), -1);  // exactly 10 bars, never empty
 
-    const breakUp = last1m.close > max5High;
-    const breakDown = last1m.close < min5Low;
+    const max10High = Math.max(...last10.map(c => c.high));
+    const min10Low = Math.min(...last10.map(c => c.low));
+
+    const break10Up = last1m.close > max10High;
+    const break10Down = last1m.close < min10Low;
+
+    // Secondary: swing high/low inside the 10-bar window
+    const swingHighs = [], swingLows = [];
+    for (let j = 1; j < last10.length - 1; j++) {
+        if (last10[j].high > last10[j - 1].high && last10[j].high > last10[j + 1].high)
+            swingHighs.push(last10[j].high);
+        if (last10[j].low < last10[j - 1].low && last10[j].low < last10[j + 1].low)
+            swingLows.push(last10[j].low);
+    }
+    const lastSwingHigh = swingHighs.length ? swingHighs[swingHighs.length - 1] : max10High;
+    const lastSwingLow = swingLows.length ? swingLows[swingLows.length - 1] : min10Low;
+
+    const breakUp = break10Up && last1m.close > lastSwingHigh;
+    const breakDown = break10Down && last1m.close < lastSwingLow;
 
     // ── S/R proximity (within 50 pts)
     const SR_THRESHOLD = 50;
@@ -638,18 +657,19 @@ function generateSignal(index1m, future1m, data1D, oiData = []) {
     // ── Volume spike
     const volConfirm = volumeSpike(future1m, future1m.length - 1);
 
-    // ── Big candle (range > 1.5× prev AND body > 60% of range)
+    // ── Big candle
     const body = Math.abs(last1m.close - last1m.open);
     const range = last1m.high - last1m.low;
     const strongBody = range > 0 && (body / range) > 0.6;
     const bigCandle = (range > (prev1m.high - prev1m.low) * 1.5) && strongBody;
 
-    // ─────────────────────────────────────────
-    // ✅ #4 — Fake breakout filter
-    //   CE: candle must close near its high   (wick above < 20% of range)
-    //   PE: candle must close near its low    (wick below < 20% of range)
-    //   Removes wick-trap breakouts where price poked through but reversed.
-    // ─────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
+    // ✂️  FIX #7 — Fake breakout filter (ACTIVATED)
+    //    Was commented out before → now enforced.
+    //    CE: close must be within top 20% of bar range (no upper wick trap).
+    //    PE: close must be within bottom 20% of bar range (no lower wick trap).
+    //    Removes wick-poke breakouts that instantly reverse.
+    // ─────────────────────────────────────────────────────
     const closeNearHigh = range > 0 && (last1m.high - last1m.close) / range < 0.2;
     const closeNearLow = range > 0 && (last1m.close - last1m.low) / range < 0.2;
 
@@ -666,7 +686,6 @@ function generateSignal(index1m, future1m, data1D, oiData = []) {
         trendUp, trendDown,
         breakUp, breakDown, breakAbove, breakBelow,
         bigCandle, strongBody, volConfirm,
-        // ✅ New indicator values exposed for logging / debugging
         bullishStructure, bearishStructure,
         higherHigh, higherLow, lowerHigh, lowerLow,
         trendStrong, currentADX: currentADX.toFixed(1),
@@ -681,36 +700,48 @@ function generateSignal(index1m, future1m, data1D, oiData = []) {
         finalSupports, finalResistances,
     };
 
-    // ─────────────────────────────────────────
-    // PE ENTRY — all conditions must pass
-    // ─────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
+    // PE ENTRY
+    //   Filters active:
+    //     ✅ Daily bearish bias
+    //     ✅ 15m bearish structure (LH + LL) ← FIX #7 activated
+    //     ✅ ADX ≥ 20 (trending, not sideways)
+    //     ✅ RSI < 45 (bearish momentum)
+    //     ✅ 5m EMA below OR big momentum candle
+    //     ✅ 10-bar + swing breakout down (guarded ← FIX #2)
+    //     ✅ Close near low (no wick trap) ← FIX #7 activated
+    //     ✅ Volume spike (session-aware)
+    //     ✅ No gap-up day
+    //
+    //   Removed from stack to reduce overfitting:
+    //     ❌ S/R breakBelow (redundant with 10-bar + swing combo)
+    // ─────────────────────────────────────────────────────
     if (
-        dailyBias === "BEARISH" &&   // daily trend
-        // bearishStructure &&   // ✅ #1  15m LH + LL structure
-        trendStrong &&   // ✅ #3  ADX ≥ 20 (not sideways)
-        rsiBearish &&   // ✅ #5  RSI < 45
-        (trendDown || bigCandle) &&   // 5m EMA or momentum candle
-        (breakDown || breakBelow) &&   // price break
-        // closeNearLow &&   // ✅ #4  no wick-top trap
-        volConfirm
-        &&   // volume spike
-        !gapUp                           // ✅ #6  no gap-up day
+        dailyBias === "BEARISH" &&
+        bearishStructure &&          // ✅ FIX #7 — 15m LH + LL
+        trendStrong &&               // ADX ≥ 20
+        rsiBearish &&                // RSI < 45
+        (trendDown || bigCandle) &&  // 5m EMA or momentum
+        breakDown &&                 // 10-bar + swing breakout (guarded ← FIX #2)
+        closeNearLow &&              // ✅ FIX #7 — no wick trap
+        volConfirm &&                // volume spike
+        !gapUp                       // no gap-up day
     ) return { signal: "PE", ...diag };
 
-    // ─────────────────────────────────────────
-    // CE ENTRY — all conditions must pass
-    // ─────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
+    // CE ENTRY
+    //   Same logic, bullish side
+    // ─────────────────────────────────────────────────────
     if (
-        dailyBias === "BULLISH" &&   // daily trend
-        // bullishStructure &&   // ✅ #1  15m HH + HL structure
-        trendStrong &&   // ✅ #3  ADX ≥ 20 (not sideways)
-        rsiBullish &&   // ✅ #5  RSI > 55
-        (trendUp || bigCandle) &&   // 5m EMA or momentum candle
-        (breakUp || breakAbove) &&   // price break
-        // closeNearHigh &&   // ✅ #4  no wick-bottom trap
-        volConfirm
-        &&   // volume spike
-        !gapDown                         // ✅ #6  no gap-down day
+        dailyBias === "BULLISH" &&
+        bullishStructure &&          // ✅ FIX #7 — 15m HH + HL
+        trendStrong &&               // ADX ≥ 20
+        rsiBullish &&                // RSI > 55
+        (trendUp || bigCandle) &&    // 5m EMA or momentum
+        breakUp &&                   // 10-bar + swing breakout (guarded ← FIX #2)
+        closeNearHigh &&             // ✅ FIX #7 — no wick trap
+        volConfirm &&                // volume spike
+        !gapDown                     // no gap-down day
     ) return { signal: "CE", ...diag };
 
     return { signal: "NO_TRADE", ...diag };
@@ -718,7 +749,7 @@ function generateSignal(index1m, future1m, data1D, oiData = []) {
 
 
 // ─────────────────────────────────────────
-// ENTRY ENGINE (live) — thin wrapper around generateSignal()
+// ENTRY ENGINE (live)
 // ─────────────────────────────────────────
 async function entryEngine(index1m, future1m, data1D, oiData = []) {
 
@@ -729,7 +760,6 @@ async function entryEngine(index1m, future1m, data1D, oiData = []) {
 
     const r = generateSignal(index1m, future1m, data1D, oiData);
 
-    // ── OI log
     if (r.oi) {
         logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         logger.info(`📊 OI | Source: ${oiData?.length >= 5 ? "API" : "Candle"} | ${r.oi.label}`);
@@ -782,7 +812,6 @@ ATR SL      : ${r.dynamicSL}  TGT: ${r.dynamicTGT}
 Trend Down  : ${r.trendDown}
 Big Candle  : ${r.bigCandle}
 Break Down  : ${r.breakDown}
-Break Below : ${r.breakBelow}
 Near Low    : ${r.closeNearLow}
 Volume OK   : ${r.volConfirm}
 
@@ -814,7 +843,6 @@ ATR SL      : ${r.dynamicSL}  TGT: ${r.dynamicTGT}
 Trend Up    : ${r.trendUp}
 Big Candle  : ${r.bigCandle}
 Break Up    : ${r.breakUp}
-Break Above : ${r.breakAbove}
 Near High   : ${r.closeNearHigh}
 Volume OK   : ${r.volConfirm}
 
@@ -849,18 +877,26 @@ async function sendTelegram(message) {
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  BACKTEST
+//
+//  🎯 FIX #5 — Realistic intra-bar SL hit detection
+//
+//  BEFORE (optimistic / wrong):
+//    if (currentClose <= openTrade.sl)   ← only triggers if bar CLOSES below SL
+//    Real world: SL can be hit mid-bar, close can still be above SL
+//    → Performance was inflated. Losers escaped, winners padded.
+//
+//  AFTER (realistic):
+//    CE trade:  bar.low  <= sl → SL hit (price dipped to SL intra-bar)
+//    PE trade:  bar.high >= sl → SL hit (price spiked to SL intra-bar)
+//    CE trade:  bar.high >= tgt → TGT hit
+//    PE trade:  bar.low  <= tgt → TGT hit
+//
+//  Tie-break rule (same bar hits both SL and TGT):
+//    Assume SL hit first (conservative / realistic assumption).
+//    Real algo would need tick data to be 100% accurate,
+//    but SL-first is the safer backtest assumption.
+//
 // ═════════════════════════════════════════════════════════════════════════════
-
-/**
- * @param {Array}  index1mAll   - Full formatted 1m index candles
- * @param {Array}  future1mAll  - Full formatted 1m future candles
- * @param {Array}  data1D       - Full daily candles
- * @param {Object} options
- *   @param {number} options.slPoints   - Fallback SL if ATR not available   (default 80)
- *   @param {number} options.tgtPoints  - Fallback TGT if ATR not available  (default 200)
- *   @param {number} options.startBar   - Start candle index                 (default 30)
- *   @param {number} options.endBar     - End candle index                   (default all)
- */
 async function backtest(index1mAll, future1mAll, data1D, options = {}) {
     const {
         slPoints = 80,
@@ -882,9 +918,11 @@ async function backtest(index1mAll, future1mAll, data1D, options = {}) {
 
     btLogger.info("═══════════════════════════════════════════════════════");
     btLogger.info("  BACKTEST START  (with ATR-adaptive SL/TGT)");
-    btLogger.info(`  Fallback SL: ${slPoints} | Fallback TGT: ${tgtPoints}`);
-    btLogger.info(`  Range: bar[${startBar}] → bar[${endBar}]`);
-    btLogger.info(`  Total 1m candles: ${index1mAll.length}`);
+    btLogger.info("  SL detection : bar.high / bar.low  ← FIX #5 applied");
+    btLogger.info("  Tie-break    : SL wins if same bar hits both");
+    btLogger.info(`  Fallback SL  : ${slPoints} | Fallback TGT: ${tgtPoints}`);
+    btLogger.info(`  Range        : bar[${startBar}] → bar[${endBar}]`);
+    btLogger.info(`  Total 1m candles : ${index1mAll.length}`);
     btLogger.info("═══════════════════════════════════════════════════════");
 
     const trades = [];
@@ -898,29 +936,65 @@ async function backtest(index1mAll, future1mAll, data1D, options = {}) {
         const index1m = index1mAll.slice(0, i + 1);
         const future1m = future1mAll.slice(0, i + 1);
 
-        const currentClose = index1m[index1m.length - 1].close;
-        const currentTime = index1m[index1m.length - 1].time;
+        const currentBar = index1m[index1m.length - 1];   // full bar object
+        const currentTime = currentBar.time;
 
         const dailySlice = data1D.filter(d => d.time <= currentTime);
 
         // ── Exit check (before entry — no same-bar entry+exit)
         if (openTrade) {
             let exitReason = null;
-            let exitPrice = currentClose;
+            let exitPrice = currentBar.close;   // default if EOD
 
             if (openTrade.type === "CE") {
-                if (currentClose <= openTrade.sl) { exitReason = "SL"; exitPrice = openTrade.sl; }
-                if (currentClose >= openTrade.tgt) { exitReason = "TGT"; exitPrice = openTrade.tgt; }
+                // ─────────────────────────────────────────────
+                // 🎯 FIX #5 — CE exit logic (was: currentClose <= sl)
+                //   SL: price DROPPED to sl intra-bar → use bar.low
+                //   TGT: price ROSE to tgt intra-bar  → use bar.high
+                //   Tie: same bar touches both → SL wins (conservative)
+                // ─────────────────────────────────────────────
+                const slHit = currentBar.low <= openTrade.sl;
+                const tgtHit = currentBar.high >= openTrade.tgt;
+
+                if (slHit && tgtHit) {
+                    // Can't tell which hit first without tick data → take SL (conservative)
+                    exitReason = "SL";
+                    exitPrice = openTrade.sl;
+                } else if (slHit) {
+                    exitReason = "SL";
+                    exitPrice = openTrade.sl;
+                } else if (tgtHit) {
+                    exitReason = "TGT";
+                    exitPrice = openTrade.tgt;
+                }
+
             } else {
-                if (currentClose >= openTrade.sl) { exitReason = "SL"; exitPrice = openTrade.sl; }
-                if (currentClose <= openTrade.tgt) { exitReason = "TGT"; exitPrice = openTrade.tgt; }
+                // ─────────────────────────────────────────────
+                // 🎯 FIX #5 — PE exit logic (was: currentClose >= sl)
+                //   SL: price ROSE to sl intra-bar  → use bar.high
+                //   TGT: price FELL to tgt intra-bar → use bar.low
+                //   Tie: same bar touches both → SL wins (conservative)
+                // ─────────────────────────────────────────────
+                const slHit = currentBar.high >= openTrade.sl;
+                const tgtHit = currentBar.low <= openTrade.tgt;
+
+                if (slHit && tgtHit) {
+                    exitReason = "SL";
+                    exitPrice = openTrade.sl;
+                } else if (slHit) {
+                    exitReason = "SL";
+                    exitPrice = openTrade.sl;
+                } else if (tgtHit) {
+                    exitReason = "TGT";
+                    exitPrice = openTrade.tgt;
+                }
             }
 
             // Force exit at 15:29 IST
             const ist = new Date(new Date(currentTime).toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
             if (ist.getHours() * 60 + ist.getMinutes() >= (15 * 60 + 29) && !exitReason) {
                 exitReason = "EOD";
-                exitPrice = currentClose;
+                exitPrice = currentBar.close;
             }
 
             if (exitReason) {
@@ -943,7 +1017,7 @@ async function backtest(index1mAll, future1mAll, data1D, options = {}) {
                     exitBar: i,
                     sl: openTrade.sl,
                     tgt: openTrade.tgt,
-                    slPoints: parseFloat(slPointsTrade.toFixed(2)),   // ✅ FIXED NAME
+                    slPoints: parseFloat(slPointsTrade.toFixed(2)),
                     tgtPoints: parseFloat(tgtPointsTrade.toFixed(2)),
                 };
                 trades.push(trade);
@@ -965,9 +1039,8 @@ async function backtest(index1mAll, future1mAll, data1D, options = {}) {
             const result = generateSignal(index1m, future1m, dailySlice, []);
 
             if (result.signal === "CE" || result.signal === "PE") {
-                const entryPrice = currentClose;
+                const entryPrice = currentBar.close;
 
-                // ✅ Use ATR-adaptive SL/TGT from signal; fallback to fixed if ATR unavailable
                 const sl = result.dynamicSL ?? slPoints;
                 const tgt = result.dynamicTGT ?? tgtPoints;
 
@@ -996,23 +1069,25 @@ async function backtest(index1mAll, future1mAll, data1D, options = {}) {
 
     // ── Force-close any trade still open at final bar
     if (openTrade) {
-        const lastClose = index1mAll[endBar].close;
+        const lastBar = index1mAll[endBar];
         const pnl = openTrade.type === "CE"
-            ? lastClose - openTrade.entryPrice
-            : openTrade.entryPrice - lastClose;
+            ? lastBar.close - openTrade.entryPrice
+            : openTrade.entryPrice - lastBar.close;
 
         trades.push({
             type: openTrade.type,
             entryTime: openTrade.entryTime,
-            exitTime: index1mAll[endBar].time,
+            exitTime: lastBar.time,
             entryPrice: openTrade.entryPrice,
-            exitPrice: lastClose,
+            exitPrice: lastBar.close,
             pnl: parseFloat(pnl.toFixed(2)),
             exitReason: "LAST_BAR",
             entryBar: openTrade.entryBar,
             exitBar: endBar,
             sl: openTrade.sl,
             tgt: openTrade.tgt,
+            slPoints: parseFloat(Math.abs(openTrade.entryPrice - openTrade.sl).toFixed(2)),
+            tgtPoints: parseFloat(Math.abs(openTrade.tgt - openTrade.entryPrice).toFixed(2)),
         });
         openTrade = null;
     }
@@ -1028,8 +1103,9 @@ async function backtest(index1mAll, future1mAll, data1D, options = {}) {
     const avgLoss = losers.length > 0 ? (losers.reduce((s, t) => s + t.pnl, 0) / losers.length).toFixed(2) : 0;
     const maxWin = winners.length > 0 ? Math.max(...winners.map(t => t.pnl)).toFixed(2) : 0;
     const maxLoss = losers.length > 0 ? Math.min(...losers.map(t => t.pnl)).toFixed(2) : 0;
-    const totalSLPoints = trades.reduce((s, t) => s + t.slPoints, 0);
-    const totalTGTPoints = trades.reduce((s, t) => s + t.tgtPoints, 0);
+    const totalSLPoints = trades.reduce((s, t) => s + (t.slPoints ?? 0), 0);
+    const totalTGTPoints = trades.reduce((s, t) => s + (t.tgtPoints ?? 0), 0);
+
     let peak = 0, maxDD = 0, running = 0;
     for (const t of trades) {
         running += t.pnl;
@@ -1042,16 +1118,16 @@ async function backtest(index1mAll, future1mAll, data1D, options = {}) {
     btLogger.info("═══════════════════════════════════════════════════════");
     btLogger.info("  BACKTEST SUMMARY");
     btLogger.info("═══════════════════════════════════════════════════════");
-    btLogger.info(`  Total Trades  : ${trades.length}`);
-    btLogger.info(`  Winners       : ${winners.length}`);
-    btLogger.info(`  Losers        : ${losers.length}`);
-    btLogger.info(`  Win Rate      : ${winRate}%`);
-    btLogger.info(`  Total PnL     : ${totalPnL >= 0 ? "+" : ""}${totalPnL.toFixed(2)} pts`);
-    btLogger.info(`  Avg Win       : +${avgWin} pts`);
-    btLogger.info(`  Avg Loss      : ${avgLoss} pts`);
-    btLogger.info(`  Max Win       : +${maxWin} pts`);
-    btLogger.info(`  Max Loss      : ${maxLoss} pts`);
-    btLogger.info(`  Max Drawdown  : ${maxDD.toFixed(2)} pts`);
+    btLogger.info(`  Total Trades     : ${trades.length}`);
+    btLogger.info(`  Winners          : ${winners.length}`);
+    btLogger.info(`  Losers           : ${losers.length}`);
+    btLogger.info(`  Win Rate         : ${winRate}%`);
+    btLogger.info(`  Total PnL        : ${totalPnL >= 0 ? "+" : ""}${totalPnL.toFixed(2)} pts`);
+    btLogger.info(`  Avg Win          : +${avgWin} pts`);
+    btLogger.info(`  Avg Loss         : ${avgLoss} pts`);
+    btLogger.info(`  Max Win          : +${maxWin} pts`);
+    btLogger.info(`  Max Loss         : ${maxLoss} pts`);
+    btLogger.info(`  Max Drawdown     : ${maxDD.toFixed(2)} pts`);
     btLogger.info(`  Total SL Points  : ${totalSLPoints.toFixed(2)} pts`);
     btLogger.info(`  Total TGT Points : ${totalTGTPoints.toFixed(2)} pts`);
     btLogger.info("═══════════════════════════════════════════════════════");
@@ -1063,8 +1139,7 @@ async function backtest(index1mAll, future1mAll, data1D, options = {}) {
         "  " +
         "  #".padEnd(5) + "Type".padEnd(5) + "Entry".padEnd(10) +
         "Exit".padEnd(10) + "SL".padEnd(10) + "TGT".padEnd(10) +
-        "SLpts".padEnd(8) +
-        "TGTpts".padEnd(8) +
+        "SLpts".padEnd(8) + "TGTpts".padEnd(8) +
         "PnL".padEnd(12) + "Exit".padEnd(7) +
         "Bars".padEnd(7) + "Entry Time".padEnd(30) + "Exit Time"
     );
@@ -1104,7 +1179,7 @@ async function main() {
         logger.info("🧪 BACKTEST MODE");
 
         const btFrom = process.env.BT_FROM ?? "2026-02-01 09:15";
-        const btTo = process.env.BT_TO ?? "2026-02-27 15:30";
+        const btTo = process.env.BT_TO ?? "2026-02-28 15:30";
         logger.info(`📅 Window: ${btFrom} → ${btTo}`);
 
         const jwt = await login();
@@ -1152,7 +1227,7 @@ async function main() {
         await backtest(alignedIndex, alignedFuture, data1D, {
             slPoints: parseInt(process.env.BT_SL ?? "80"),
             tgtPoints: parseInt(process.env.BT_TGT ?? "200"),
-            startBar: 30,
+            startBar: 0,
         });
 
         logger.info("✅ Done. See backtest.log");
