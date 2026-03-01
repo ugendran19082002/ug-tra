@@ -1,104 +1,46 @@
 require("dotenv").config();
 const axios = require("axios");
-const speakeasy = require("speakeasy");
-const os = require("os");
 
-const BASE_URL = "https://apiconnect.angelone.in";
 
-// ─────────────────────────────
-// NETWORK
-// ─────────────────────────────
-function getLocalIP() {
-    for (const ifaces of Object.values(os.networkInterfaces())) {
-        for (const iface of ifaces) {
-            if (iface.family === "IPv4" && !iface.internal)
-                return iface.address;
-        }
-    }
-    return "127.0.0.1";
-}
+async function getFuture(token) {
+    const INSTRUMENT_KEY = "BSE_FO|825565";
 
-function buildHeaders(jwtToken = null) {
-    return {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "X-UserType": "USER",
-        "X-SourceID": "WEB",
-        "X-ClientLocalIP": getLocalIP(),
-        "X-ClientPublicIP": getLocalIP(),
-        "X-MACAddress": "00:00:00:00:00:00",
-        "X-PrivateKey": process.env.API_KEY,
-        ...(jwtToken && { Authorization: `Bearer ${jwtToken}` })
-    };
-}
 
-// ─────────────────────────────
-// LOGIN
-// ─────────────────────────────
-async function login() {
+    const toDate = "2026-02-27";
+    const fromDate = "2026-02-27";
 
-    const otp = speakeasy.totp({
-        secret: process.env.TOTP_SECRET,
-        encoding: "base32"
-    });
+    const url = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(INSTRUMENT_KEY)}/minutes/1/${toDate}/${fromDate}`;
 
-    const res = await axios.post(
-        `${BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword`,
-        {
-            clientcode: process.env.CLIENT_ID,
-            password: process.env.PASSWORD,
-            totp: otp
-        },
-        { headers: buildHeaders() }
-    );
+    try {
 
-    return res.data.data.jwtToken;
-}
-
-// ─────────────────────────────
-// QUOTE API CALL
-// ─────────────────────────────
-async function getQuote(jwtToken) {
-
-    const res = await axios.post(
-        `${BASE_URL}/rest/secure/angelbroking/market/v1/quote/`,
-        {
-            mode: "FULL",   // FULL / OHLC / LTP
-            exchangeTokens: {
-                BFO: ["825565"] // SBIN example
+        const res = await axios.get(url, {
+            headers: {
+                "Accept": "application/json",
+                "Authorization": `Bearer`
             }
-        },
-        { headers: buildHeaders(jwtToken) }
-    );
+        });
 
-    const data = res.data.data.fetched[0];
+        const candles = res.data?.data?.candles || [];
 
-    console.log("📈 LTP:", data.ltp);
-    console.log("🟢 Open:", data.open);
-    console.log("🔼 High:", data.high);
-    console.log("🔽 Low:", data.low);
-    console.log("🔴 Close:", data.close);
-    console.log("📊 Volume:", data.tradeVolume);
-    console.log("📊 OI:", data.opnInterest || 0);
-    ;
-    console.log("------------------------");
-}
-
-// ─────────────────────────────
-// MAIN
-// ─────────────────────────────
-async function main() {
-
-    const jwtToken = await login();
-
-    // Call every 5 seconds
-    setInterval(async () => {
-        try {
-            await getQuote(jwtToken);
-        } catch (err) {
-            console.log("Error:", err.response?.data || err.message);
+        if (!candles.length) {
+            console.log("⚠ No candles returned");
+            return;
         }
-    }, 5000);
+
+        candles.forEach(c => {
+            console.log("━━━━━━━━━━━━━━━━━━");
+            console.log("🕒 Time:", c[0]);
+            console.log("🟢 Open:", c[1]);
+            console.log("🔼 High:", c[2]);
+            console.log("🔽 Low:", c[3]);
+            console.log("🔴 Close:", c[4]);
+            console.log("📊 Volume:", c[5]);
+            console.log("📊 OI:", c[6]);
+        });
+
+    } catch (err) {
+        console.error("❌ Error:", err.response?.data || err.message);
+    }
 }
 
-main();
+getHistorical();

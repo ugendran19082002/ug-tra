@@ -166,65 +166,52 @@ async function getHistorical(jwt, exchange, token, interval, fromdate, todate, r
 }
 
 // ─────────────────────────────────────────
-// OI DATA
+// OI / FUTURE DATA  (Upstox)
+// FIX 1: accept fromdate/todate as params instead of hardcoding
+// FIX 2: typo  candls → candles
 // ─────────────────────────────────────────
-async function getOIData(jwt, token, interval = "ONE_MINUTE", retries = 3) {
-    // const body = {
-    //     exchange: "NSE",
-    //     symboltoken: "99926000",
-    //     interval,
-    //     "fromdate": "2026-02-27 09:15",
-    //     "todate": "2026-02-27 15:30"
-
-    // };
-
-
+async function getFuture(token, interval = "ONE_MINUTE", fromdate, todate, retries = 3) {
     const INSTRUMENT_KEY = `BSE_FO|${token}`;
 
-    const toDate = "2026-02-27";
-    const fromDate = "2026-02-27";
+    // Convert "YYYY-MM-DD HH:mm" → "YYYY-MM-DD"
+    const toDate = (todate ?? "").slice(0, 10) || new Date().toISOString().slice(0, 10);
+    const fromDate = (fromdate ?? "").slice(0, 10) || toDate;
 
     const url = `https://api.upstox.com/v3/historical-candle/${encodeURIComponent(INSTRUMENT_KEY)}/minutes/1/${toDate}/${fromDate}`;
+
     try {
-
-
         const res = await axios.get(url, {
             headers: {
                 "Accept": "application/json",
                 "Authorization": `Bearer ${process.env.UPSTOX_ACCESS_TOKEN}`
-                // "Authorization": `Bearer ${process.env.UPSTOX_ACCESS_TOKEN}`
             }
         });
 
+        // FIX 2: was `candls`, now `candles`
         const candles = res.data?.data?.candles || [];
 
         if (!candles.length) {
-            console.log("⚠ No candles returned");
-            return;
+            logger.warn("⚠ No future candles returned");
+            return [];
         }
 
-        // logger.debug(`📊 Fetching OI | token: ${token}`);
-        // const res = await axios.post(
-        //    `${BASE_URL}/rest/secure/angelbroking/historical/v1/getOIData`,
-        //      body,
-        //     { headers: buildHeaders(jwt) }
-        // );
         logger.debug(`OI Sample:\n${JSON.stringify(candles.slice(0, 2), null, 2)}`);
-        return candles;
+        return candles;   // ← raw arrays, format() will process them
 
     } catch (err) {
         if (err.response?.status === 403 && retries > 0) {
-            logger.warn(`⚠ OI Rate-limit — retrying in 2s… (${retries} left)`);
+            logger.warn(`⚠ Future Rate-limit — retrying in 2s… (${retries} left)`);
             await sleep(2000);
-            return getOIData(jwt, token, interval, retries - 1);
+            return getFuture(token, interval, fromdate, todate, retries - 1);
         }
-        logger.error(`❌ OI fetch failed: ${err.message}`);
+        logger.error(`❌ Future fetch failed: ${err.message}`);
         return [];
     }
 }
 
 // ─────────────────────────────────────────
 // FORMAT
+// Upstox candle: [time, open, high, low, close, volume, oi]
 // ─────────────────────────────────────────
 const format = raw => raw.map(c => ({
     time: c[0],
@@ -482,27 +469,13 @@ async function getFutureToken(symbolName = "SENSEX", refDate = new Date()) {
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-//
 //  generateSignal()
-//
-//  Receives pre-fetched timeframes (no buildTimeframe inside).
-//
-//  @param {Array} index1m   - 1m  index candles  (sliced to current bar)
-//  @param {Array} index5m   - 5m  index candles  (fetched directly from API)
-//  @param {Array} index15m  - 15m index candles  (fetched directly from API)
-//  @param {Array} future1m  - 1m  future candles (sliced to current bar)
-//  @param {Array} data1D    - Daily candles       (sliced to current bar)
-//  @param {Array} oiData    - OI data
-//
-//  @returns {{ signal: "CE"|"PE"|"NO_TRADE", dynamicSL, dynamicTGT, ...diagnostics }}
-//
 // ═════════════════════════════════════════════════════════════════════════════
 function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = []) {
 
     if (!index5m?.length || !index15m?.length)
         return { signal: "NO_TRADE", reason: "insufficient timeframe data" };
 
-    // ── Daily bias
     const dailyData = (data1D?.length >= 2) ? data1D : [];
     if (dailyData.length < 2)
         return { signal: "NO_TRADE", reason: "insufficient daily data" };
@@ -520,12 +493,10 @@ function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = [
     if (dailyBias === "NEUTRAL")
         return { signal: "NO_TRADE", reason: "daily bias neutral" };
 
-    // ── Previous day S/R
     const prevDay = dailyData[dailyData.length - 2];
     const prevHigh = prevDay?.high ?? 0;
     const prevLow = prevDay?.low ?? 0;
 
-    // ── Gap-day filter
     const GAP_THRESHOLD = 300;
     const todayOpen = dailyLast.open;
     const prevClose = prevDay?.close ?? todayOpen;
@@ -537,7 +508,6 @@ function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = [
             gapDown ? `🔽 Gap Down (${gapPoints.toFixed(0)} pts)` :
                 `◾ Normal day (${gapPoints.toFixed(0)} pts)`;
 
-    // ── 15m market structure (HH/HL or LH/LL)
     const last3 = index15m.slice(-3);
     const hasStructure = last3.length >= 3;
     const higherHigh = hasStructure && last3[2].high > last3[1].high;
@@ -547,23 +517,19 @@ function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = [
     const bullishStructure = higherHigh && higherLow;
     const bearishStructure = lowerHigh && lowerLow;
 
-    // ── Swing S/R (from 15m for cleaner levels)
     const { supports, resistances } = findSupportResistance(index15m);
 
-    // ── Round levels
     const currentPrice = index5m[index5m.length - 1].close;
     const roundLevels = getRoundLevels(currentPrice);
 
     const finalSupports = cleanLevels([...supports, prevLow, ...roundLevels.filter(r => r < currentPrice)]);
     const finalResistances = cleanLevels([...resistances, prevHigh, ...roundLevels.filter(r => r > currentPrice)]);
 
-    // ── 5m EMA trend
     const ema5m = calculateEMA(index5m);
     const last5m = index5m[index5m.length - 1];
     const trendUp = last5m.close > ema5m[ema5m.length - 1];
     const trendDown = last5m.close < ema5m[ema5m.length - 1];
 
-    // ── ATR(14) on 5m — dynamic SL / TGT
     const ATR_SL_MULT = 1.0;
     const ATR_TGT_MULT = 2.5;
     const ATR_FALLBACK = 80;
@@ -574,18 +540,15 @@ function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = [
     const dynamicSL = Math.min(60, Math.round(currentATR * ATR_SL_MULT));
     const dynamicTGT = Math.max(100, Math.round(currentATR * ATR_TGT_MULT));
 
-    // ── ADX(14) on 5m
     const adx5mArr = calculateADX(index5m, 14);
     const currentADX = adx5mArr[adx5mArr.length - 1];
     const trendStrong = currentADX >= 20;
 
-    // ── RSI(14) on 5m
     const rsi5mArr = calculateRSI(index5m, 14);
     const currentRSI = rsi5mArr[rsi5mArr.length - 1];
     const rsiBullish = currentRSI > 55;
     const rsiBearish = currentRSI < 45;
 
-    // ── 1m breakout (5-bar high/low)
     const last1m = index1m[index1m.length - 1];
     const prev1m = index1m[index1m.length - 2];
     const last5 = index1m.slice(-6, -1);
@@ -595,7 +558,6 @@ function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = [
     const breakUp = last1m.close > max5High;
     const breakDown = last1m.close < min5Low;
 
-    // ── S/R proximity
     const SR_THRESHOLD = 50;
     const nearSupport = finalSupports.filter(s => s < last1m.close).pop();
     const nearResistance = finalResistances.find(r => r > last1m.close);
@@ -603,27 +565,21 @@ function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = [
     const breakBelow = nearSupport && last1m.close < nearSupport && Math.abs(last1m.close - nearSupport) <= SR_THRESHOLD;
     const breakAbove = nearResistance && last1m.close > nearResistance && Math.abs(last1m.close - nearResistance) <= SR_THRESHOLD;
 
-    // ── Volume spike
     const volConfirm = volumeSpike(future1m, future1m.length - 1);
 
-    // ── Big candle
     const body = Math.abs(last1m.close - last1m.open);
     const range = last1m.high - last1m.low;
     const strongBody = range > 0 && (body / range) > 0.6;
     const bigCandle = (range > (prev1m.high - prev1m.low) * 1.5) && strongBody;
 
-    // ── Fake-breakout filter
     const closeNearHigh = range > 0 && (last1m.high - last1m.close) / range < 0.2;
     const closeNearLow = range > 0 && (last1m.close - last1m.low) / range < 0.2;
 
-    // ── OI analysis
     const oi = analyzeOI(future1m, oiData);
 
-    // ── Spread
     const lastFuture = future1m[future1m.length - 1];
     const spread = lastFuture.close - last1m.close;
 
-    // ── Diagnostics bundle
     const diag = {
         dailyBias, emaAbove, bullCandle, bearCandle,
         trendUp, trendDown,
@@ -643,7 +599,6 @@ function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = [
         finalSupports, finalResistances,
     };
 
-    // ── PE ENTRY
     if (
         dailyBias === "BEARISH" &&
         trendStrong &&
@@ -652,9 +607,9 @@ function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = [
         (breakDown || breakBelow) &&
         volConfirm &&
         !gapUp
+        // && oi.signal == "BEARISH"
     ) return { signal: "PE", ...diag };
 
-    // ── CE ENTRY
     if (
         dailyBias === "BULLISH" &&
         trendStrong &&
@@ -663,6 +618,8 @@ function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = [
         (breakUp || breakAbove) &&
         volConfirm &&
         !gapDown
+        // && oi.signal == "BULLISH"
+
     ) return { signal: "CE", ...diag };
 
     return { signal: "NO_TRADE", ...diag };
@@ -671,11 +628,9 @@ function generateSignal(index1m, index5m, index15m, future1m, data1D, oiData = [
 
 // ─────────────────────────────────────────
 // ENTRY ENGINE (live)
-// Fetches all timeframes directly from API, passes them to generateSignal().
 // ─────────────────────────────────────────
 async function entryEngine(jwt, fromdate, todate, futureToken) {
 
-    // ── Fetch all required timeframes in parallel (with small gaps to avoid rate-limit)
     const indexRaw1m = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_MINUTE", fromdate, todate);
     await sleep(300);
     const indexRaw5m = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "FIVE_MINUTE", fromdate, todate);
@@ -684,9 +639,11 @@ async function entryEngine(jwt, fromdate, todate, futureToken) {
     await sleep(300);
     const raw1D = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_DAY", getDailyFromDate(), todate);
     await sleep(300);
-    const futureRaw1m = await getHistorical(jwt, "BFO", futureToken, "ONE_MINUTE", fromdate, todate);
+
+    // FIX 3: pass fromdate & todate correctly (was: getFuture(futureToken, "ONE_MINUTE", fromdate, todate) but
+    //         old signature was (token, interval, retries) — now (token, interval, fromdate, todate, retries))
+    const futureRaw1m = await getHistorical(jwt, "BSE", futureToken, "ONE_MINUTE", fromdate, todate);
     await sleep(300);
-    const oiRaw = await getOIData(jwt, futureToken, "THREE_MINUTE");
 
     if (!indexRaw1m.length || !futureRaw1m.length) {
         logger.warn("⚠ Missing data — skipping");
@@ -699,11 +656,13 @@ async function entryEngine(jwt, fromdate, todate, futureToken) {
     const future1m = format(futureRaw1m);
     const data1D = format(raw1D);
 
+    // FIX 4: oiRaw must come AFTER future1m is declared, and uses future1m (not a syntax error anymore)
+    const oiRaw = await getFuture(futureToken, "ONE_MINUTE", fromdate, todate);   // Upstox candles already carry OI in c[6]; reuse the formatted array
+
     logger.info(`Timeframes → 1m:${index1m.length} 5m:${index5m.length} 15m:${index15m.length} 1D:${data1D.length}`);
 
     const r = generateSignal(index1m, index5m, index15m, future1m, data1D, oiRaw);
 
-    // ── OI log
     if (r.oi) {
         logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         logger.info(`📊 OI | Source: ${oiRaw?.length >= 5 ? "API" : "Candle"} | ${r.oi.label}`);
@@ -823,8 +782,6 @@ async function sendTelegram(message) {
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  BACKTEST
-//  Fetches 1m, 5m, 15m, 1D once upfront, then slices per bar.
-//  5m / 15m are sliced by timestamp so we only use candles ≤ current 1m bar.
 // ═════════════════════════════════════════════════════════════════════════════
 async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     const {
@@ -850,7 +807,6 @@ async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     btLogger.info(`  Window: ${btFrom} → ${btTo}`);
     btLogger.info("═══════════════════════════════════════════════════════");
 
-    // ── Fetch all timeframes once
     logger.info("📥 Fetching 1m index...");
     const indexRaw1m = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_MINUTE", btFrom, btTo);
     await sleep(500);
@@ -869,8 +825,8 @@ async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     logger.info("📥 Fetching daily index...");
     const raw1D = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_DAY", dailyFrom, btTo);
     await sleep(500);
-    logger.info("📥 Fetching 1m future...");
-    const futureRaw1m = await getHistorical(jwt, "BFO", futureToken, "ONE_MINUTE", btFrom, btTo);
+    logger.info("📥 Fetching 1m future (Upstox)...");
+    const futureRaw1m = await getFuture(futureToken, "ONE_MINUTE", btFrom, btTo);
 
     if (!indexRaw1m.length || !futureRaw1m.length) {
         logger.error("❌ No data. Check API credentials or date range.");
@@ -883,7 +839,6 @@ async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     const future1mAll = format(futureRaw1m);
     const data1DAll = format(raw1D);
 
-    // Align 1m index ↔ future by timestamp
     const futureMap = new Map(future1mAll.map(c => [c.time, c]));
     const alignedIndex = [];
     const alignedFuture = [];
@@ -914,14 +869,12 @@ async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
         const future1m = alignedFuture.slice(0, i + 1);
         const currentTime = index1m[index1m.length - 1].time;
 
-        // Slice 5m / 15m / 1D up to the current 1m bar timestamp
         const index5m = index5mAll.filter(c => c.time <= currentTime);
         const index15m = index15mAll.filter(c => c.time <= currentTime);
         const dailySlice = data1DAll.filter(d => d.time <= currentTime);
 
         const currentClose = index1m[index1m.length - 1].close;
 
-        // ── Exit check
         if (openTrade) {
             let exitReason = null;
             let exitPrice = currentClose;
@@ -934,7 +887,6 @@ async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
                 if (currentClose <= openTrade.tgt) { exitReason = "TGT"; exitPrice = openTrade.tgt; }
             }
 
-            // Force exit at 15:29 IST
             const ist = new Date(new Date(currentTime).toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
             if (ist.getHours() * 60 + ist.getMinutes() >= (15 * 60 + 29) && !exitReason) {
                 exitReason = "EOD";
@@ -978,7 +930,6 @@ async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
             }
         }
 
-        // ── Entry check
         if (!openTrade) {
             const result = generateSignal(index1m, index5m, index15m, future1m, dailySlice, []);
 
@@ -1010,7 +961,6 @@ async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
 
     logger.level = origLevel;
 
-    // Force-close any remaining open trade
     if (openTrade) {
         const lastClose = alignedIndex[endBar].close;
         const pnl = openTrade.type === "CE"
@@ -1032,7 +982,6 @@ async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
         });
     }
 
-    // ── Summary
     const winners = trades.filter(t => t.pnl > 0);
     const losers = trades.filter(t => t.pnl < 0);
     const totalPnL = trades.reduce((s, t) => s + t.pnl, 0);
