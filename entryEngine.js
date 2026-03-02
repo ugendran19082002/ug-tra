@@ -148,9 +148,9 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
     logger.info(`🔷 RSI(14)   : ${r.currentRSI} | bullish:${r.rsiBullish} bearish:${r.rsiBearish}`);
     logger.info(`🔷 ATR(14)   : ${r.currentATR} → SL:${r.dynamicSL} TGT:${r.dynamicTGT}`);
     logger.info(`trendUp:${r.trendUp} trendDown:${r.trendDown}`);
-    logger.info(`breakUp:${r.breakUp} breakDown:${r.breakDown} | breakAbove:${r.breakAbove} breakBelow:${r.breakBelow}`);
+    logger.info(`breakUp:${r.breakUp} breakDown:${r.breakDown}`);
     logger.info(`bigCandle:${r.bigCandle} strongBody:${r.strongBody} | closeNearHigh:${r.closeNearHigh} closeNearLow:${r.closeNearLow} | volConfirm:${r.volConfirm}`);
-    logger.info(`🔷 Sweep     : EqHi:${r.equalHigh} SweepHi:${r.sweepHigh} BearRej:${r.bearishRejection} | EqLo:${r.equalLow} SweepLo:${r.sweepLo} BullRej:${r.bullishRejection}`);
+    logger.info(`🔷 Sweep     : EqHi:${r.equalHigh} SweepHi:${r.sweepHigh} BearRej:${r.bearishRejection} | EqLo:${r.equalLow} SweepLo:${r.sweepLow} BullRej:${r.bullishRejection}`);
     logger.info(`Supports: ${JSON.stringify(r.finalSupports)}`);
     logger.info(`Resistances: ${JSON.stringify(r.finalResistances)}`);
 

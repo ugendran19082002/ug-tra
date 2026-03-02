@@ -25,15 +25,14 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         !index15m?.length ||
         !future1m?.length || index5m.length < 8
     ) {
-        return { signal: "NO_TRADE", reason: "insufficient timeframe data" };
-    }
-    if (!future1m?.length) {
-        return { signal: "NO_TRADE", reason: "insufficient futures data" };
-    }
-
-    // Require minimum 5m candles for liquidity logic
-    if (index5m.length < 8) {
-        return { signal: "NO_TRADE", reason: "not enough 5m candles" };
+        return {
+            signal: "NO_TRADE",
+            reason: "insufficient timeframe data",
+            indexLTP: index1m?.[index1m.length - 1]?.close?.toFixed(2) || "0.00",
+            futureLTP: future1m?.[future1m.length - 1]?.close?.toFixed(2) || "0.00",
+            spread: "0.00",
+            dailyBias: "N/A"
+        };
     }
 
     const last1m = index1m[index1m.length - 1];
@@ -43,7 +42,14 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     const lastFuture = future1m[future1m.length - 1];
 
     if (!last1m || !prev1m || !last5m || !prev5m || !lastFuture) {
-        return { signal: "NO_TRADE", reason: "invalid candle structure" };
+        return {
+            signal: "NO_TRADE",
+            reason: "invalid candle structure",
+            indexLTP: last1m?.close?.toFixed(2) || "0.00",
+            futureLTP: lastFuture?.close?.toFixed(2) || "0.00",
+            spread: "0.00",
+            dailyBias: "N/A"
+        };
     }
 
     // ─────────────────────────────────────────
@@ -55,9 +61,10 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         return {
             signal: "NO_TRADE",
             reason: "insufficient daily data",
-            dailyBias: "N/A",
             indexLTP: last1m.close.toFixed(2),
-            futureLTP: lastFuture.close.toFixed(2)
+            futureLTP: lastFuture.close.toFixed(2),
+            dailyBias: "N/A",
+            spread: (lastFuture.close - last1m.close).toFixed(2)
         };
     }
 

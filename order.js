@@ -159,9 +159,9 @@ export async function executeOrder(jwt, signal) {
     const transactionType = "BUY";
 
     // 1️⃣ Place entry BUY
-    const orderNo = await placeRegularOrder(jwt, symbol, optionToken, transactionType);
+    const orderNo = await placeRegularOrder(jwt, symbol, optionToken, transactionType, 20);
     if (!orderNo) {
-        logger.error("❌ AngelOne Entry order failed — skipping GTT creation");
+        logger.error("❌ AngelOne Entry order failed — skipping SL/TGT creation");
         return;
     }
 
