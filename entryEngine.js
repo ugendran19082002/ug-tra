@@ -1,7 +1,7 @@
 import { logger, tradeLogger, getISTTime } from "./logger.js";
 import { sleep, getDailyFromDate, calculateOptionLevels, buildTimeframe } from "./helpers.js";
 import { getHistorical, getFuture, format } from "./api/historical.js";
-import { getATMOptionTokens, getLTP } from "./getStrick.js";
+import { getATMOptionTokens, getLTP, getClosedCandle, getLiveData } from "./getStrick.js";
 import { generateSignal } from "./signals.js";
 import { sendTelegram } from "./telegram.js";
 import { executeOrder } from "./order.js";
@@ -26,30 +26,38 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
 
     await sleep(300);
 
+
+    const index1m = format(indexRaw1m);
+    let future1m = format(futureRaw1m);
+    const data1D = format(raw1D);
+
+    // ── Fetch live closed candle from SmartAPI FULL mode
+    // This gives real-time OI and is guaranteed to be a COMPLETED candle
+    await sleep(300);
+    const liveCandle = await getClosedCandle(jwt, "BFO", futureToken, 1);
+
+    if (liveCandle) {
+        // Replace last candle if same timestamp, otherwise append
+        const lastFuture = future1m[future1m.length - 1];
+        if (lastFuture && lastFuture.time === liveCandle.time) {
+            future1m[future1m.length - 1] = liveCandle; // update with live OI
+            logger.info(`🔄 Updated last candle with live OI: ${liveCandle.oi}`);
+        } else {
+            future1m.push(liveCandle); // append new closed candle
+            logger.info(`➕ Appended live closed candle: ${liveCandle.time} | OI: ${liveCandle.oi}`);
+        }
+    } else {
+        logger.warn("⚠ Live candle fetch failed — using historical data only");
+    }
+
+
     if (!indexRaw1m.length || !futureRaw1m.length) {
         logger.warn("⚠ Missing data — skipping");
         return { signal: "NO_TRADE", reason: "missing data" };
     }
-
-    const index1m = format(indexRaw1m);
-    const future1m = format(futureRaw1m);
-    const data1D = format(raw1D);
-
-
-
-
-    const lastCandle = futureRaw1m[futureRaw1m.length - 1];
-
-    console.log("📍 Latest 1m Candle:");
-    console.log("Time   :", lastCandle[0]);
-    console.log("Open   :", lastCandle[1]);
-    console.log("High   :", lastCandle[2]);
-    console.log("Low    :", lastCandle[3]);
-    console.log("Close  :", lastCandle[4]);
-    console.log("Volume :", lastCandle[5]);
-    console.log("OI     :", lastCandle[6] ?? "N/A");
-    logger.debug(`OI Sample:\n${JSON.stringify(futureRaw1m.slice(0, 2), null, 2)}`);
-
+    // ── Log latest candle being used for signal
+    const latest = future1m[future1m.length - 1];
+    logger.info(`📍 Signal Candle → Time:${latest.time} O:${latest.open} H:${latest.high} L:${latest.low} C:${latest.close} Vol:${latest.volume} OI:${latest.oi}`);
 
     // ── Fall back to building 5m / 15m from 1m when API returns empty
     const index5m = (indexRaw5m && indexRaw5m.length) ? format(indexRaw5m) : buildTimeframe(index1m, 5);
@@ -61,6 +69,7 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
     logger.info(`Timeframes → 1m:${index1m.length} 5m:${index5m.length} 15m:${index15m.length} 1D:${data1D.length}`);
 
     const r = generateSignal(index1m, index5m, index15m, future1m, data1D);
+
 
     logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     logger.info(`📍 INDEX  LTP → ${r.indexLTP}  | IST: ${getISTTime(new Date(index1m[index1m.length - 1].time))}`);
