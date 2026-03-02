@@ -2,7 +2,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { logger, getISTTime } from "./logger.js";
-import { sleep, getTodayFromDate } from "./helpers.js";
+import { sleep, getTodayFromDate, formatCurrentDateTime } from "./helpers.js";
 import { login } from "./api/auth.js";
 import { getFutureToken } from "./api/tokens.js";
 import { entryEngine } from "./entryEngine.js";
@@ -18,8 +18,13 @@ async function main() {
     if (isBacktest) {
         logger.info("🧪 BACKTEST MODE");
 
-        const btFrom = process.env.BT_FROM ?? "2026-02-15 09:15";
-        const btTo = process.env.BT_TO ?? "2026-02-27 15:30";
+        // const btFrom = process.env.BT_FROM ?? "2026-02-15 09:15";
+        // const btTo = process.env.BT_TO ?? "2026-02-27 15:30";
+
+        const btFrom = getTodayFromDate();
+        console.log("btFrom", btFrom);
+        const btTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
+        console.log("btTo", btTo);
         logger.info(`📅 Window: ${btFrom} → ${btTo}`);
 
         const jwt = await login();
@@ -51,7 +56,9 @@ async function main() {
             logger.info(`🔄 Loop #${iteration} | IST: ${getISTTime()}`);
 
             const liveFrom = getTodayFromDate();
-            const liveTo = "2026-02-27 15:30"; // ✅ FIX: replace with formatDateTime() for real live use
+            console.log("liveFrom", liveFrom);
+            const liveTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
+            console.log("liveTo", liveTo);
 
             logger.info(`📅 Window: ${liveFrom} → ${liveTo}`);
 

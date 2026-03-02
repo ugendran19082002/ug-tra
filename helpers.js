@@ -17,6 +17,25 @@ export function getLocalIP() {
     return "127.0.0.1";
 }
 
+
+export function buildTimeframe(data, size) {
+    const result = [];
+    for (let i = 0; i < data.length; i += size) {
+        const chunk = data.slice(i, i + size);
+        if (chunk.length < size) continue;
+        result.push({
+            time: chunk[0].time,
+            open: chunk[0].open,
+            high: Math.max(...chunk.map(c => c.high)),
+            low: Math.min(...chunk.map(c => c.low)),
+            close: chunk[chunk.length - 1].close,
+            volume: chunk.reduce((s, c) => s + c.volume, 0),
+            oi: chunk.reduce((s, c) => s + c.oi, 0)
+        });
+    }
+    return result;
+}
+
 // ─────────────────────────────────────────
 // API HEADERS
 // ─────────────────────────────────────────
@@ -37,12 +56,47 @@ export function buildHeaders(jwtToken = null) {
 // ─────────────────────────────────────────
 // DATE FORMATTING
 // ─────────────────────────────────────────
-export function formatDateTime(date = new Date()) {
+export function formatDateTime() {
+    const date = new Date();
+
+    // Go 20 days back
+    date.setDate(date.getDate() - 20);
+
+    // Set fixed time 09:15
+    date.setHours(9);
+    date.setMinutes(15);
+    date.setSeconds(0);
+    date.setMilliseconds(0);
+
     const p = n => String(n).padStart(2, "0");
+
     return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} ` +
         `${p(date.getHours())}:${p(date.getMinutes())}`;
 }
 
+
+// export function formatCurrentDateTime() {
+//     const now = new Date();
+//     const p = n => String(n).padStart(2, "0");
+
+//     return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ` +
+//         `${p(now.getHours())}:${p(now.getMinutes())}`;
+// }
+
+export function formatCurrentDateTime() {
+    const now = new Date();
+
+    // Remove seconds & milliseconds
+    now.setSeconds(0, 0);
+
+    // Go 1 minute back
+    now.setMinutes(now.getMinutes() - 1);
+
+    const p = n => String(n).padStart(2, "0");
+
+    return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ` +
+        `${p(now.getHours())}:${p(now.getMinutes())}`;
+}
 // ─────────────────────────────────────────
 // DYNAMIC DATE HELPERS
 // ─────────────────────────────────────────

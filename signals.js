@@ -12,8 +12,25 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         return { signal: "NO_TRADE", reason: "insufficient timeframe data" };
 
     const dailyData = (data1D?.length >= 2) ? data1D : [];
-    if (dailyData.length < 2)
-        return { signal: "NO_TRADE", reason: "insufficient daily data" };
+    if (dailyData.length < 2) {
+        const last1m = index1m?.[index1m.length - 1];
+        const lastFuture = future1m?.[future1m.length - 1];
+        return {
+            signal: "NO_TRADE", reason: "insufficient daily data",
+            dailyBias: "N/A", emaAbove: null, bullCandle: null, bearCandle: null,
+            indexLTP: last1m ? last1m.close.toFixed(2) : "N/A",
+            futureLTP: lastFuture ? lastFuture.close.toFixed(2) : "N/A",
+            spread: (last1m && lastFuture) ? (lastFuture.close - last1m.close).toFixed(2) : "N/A",
+            currentADX: "N/A", currentRSI: "N/A", currentATR: "N/A",
+            dynamicSL: null, dynamicTGT: null, trendStrong: null,
+            trendUp: null, trendDown: null, breakUp: null, breakDown: null,
+            breakAbove: null, breakBelow: null, bigCandle: null, strongBody: null,
+            volConfirm: null, closeNearHigh: null, closeNearLow: null,
+            bullishStructure: null, bearishStructure: null,
+            higherHigh: null, higherLow: null, lowerHigh: null, lowerLow: null,
+            gapLabel: "N/A", finalSupports: [], finalResistances: [],
+        };
+    }
 
     // ── Daily bias
     const dailyEMA = calculateEMA(dailyData);
@@ -26,8 +43,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         (emaAbove && bullCandle) ? "BULLISH" :
             (!emaAbove && bearCandle) ? "BEARISH" : "NEUTRAL";
 
-    if (dailyBias === "NEUTRAL")
-        return { signal: "NO_TRADE", reason: "daily bias neutral" };
+    // NOTE: NEUTRAL guard moved below so diag is always included in the return
 
     // ── Prev day levels
     const prevDay = dailyData[dailyData.length - 2];
@@ -141,6 +157,8 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     // ═══════════════════════
     // ENTRY CONDITIONS
     // ═══════════════════════
+    if (dailyBias === "NEUTRAL")
+        return { signal: "NO_TRADE", reason: "daily bias neutral", ...diag };
     if (
         dailyBias === "BEARISH" &&
         trendStrong &&

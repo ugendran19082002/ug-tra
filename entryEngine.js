@@ -1,10 +1,12 @@
 import { logger, tradeLogger, getISTTime } from "./logger.js";
-import { sleep, getDailyFromDate, calculateOptionLevels } from "./helpers.js";
+import { sleep, getDailyFromDate, calculateOptionLevels, buildTimeframe } from "./helpers.js";
 import { getHistorical, getFuture, format } from "./api/historical.js";
 import { getATMOptionTokens, getLTP } from "./getStrick.js";
 import { generateSignal } from "./signals.js";
 import { sendTelegram } from "./telegram.js";
 import { executeOrder } from "./order.js";
+
+
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  ENTRY ENGINE (live)
@@ -30,10 +32,31 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
     }
 
     const index1m = format(indexRaw1m);
-    const index5m = format(indexRaw5m);
-    const index15m = format(indexRaw15m);
     const future1m = format(futureRaw1m);
     const data1D = format(raw1D);
+
+
+
+
+    const lastCandle = futureRaw1m[futureRaw1m.length - 1];
+
+    console.log("📍 Latest 1m Candle:");
+    console.log("Time   :", lastCandle[0]);
+    console.log("Open   :", lastCandle[1]);
+    console.log("High   :", lastCandle[2]);
+    console.log("Low    :", lastCandle[3]);
+    console.log("Close  :", lastCandle[4]);
+    console.log("Volume :", lastCandle[5]);
+    console.log("OI     :", lastCandle[6] ?? "N/A");
+    logger.debug(`OI Sample:\n${JSON.stringify(futureRaw1m.slice(0, 2), null, 2)}`);
+
+
+    // ── Fall back to building 5m / 15m from 1m when API returns empty
+    const index5m = (indexRaw5m && indexRaw5m.length) ? format(indexRaw5m) : buildTimeframe(index1m, 5);
+    const index15m = (indexRaw15m && indexRaw15m.length) ? format(indexRaw15m) : buildTimeframe(index1m, 15);
+
+    if (!index5m.length) logger.warn("⚠ 5m data empty even after buildTimeframe fallback");
+    if (!index15m.length) logger.warn("⚠ 15m data empty even after buildTimeframe fallback");
 
     logger.info(`Timeframes → 1m:${index1m.length} 5m:${index5m.length} 15m:${index15m.length} 1D:${data1D.length}`);
 
