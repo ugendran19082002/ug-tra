@@ -1,10 +1,10 @@
 import { logger, tradeLogger, getISTTime } from "./logger.js";
-import { sleep, getDailyFromDate, calculateOptionLevels, buildTimeframe } from "./helpers.js";
+import { sleep, getDailyFromDate, buildTimeframe } from "./helpers.js";
 import { getHistorical, getFuture, format } from "./api/historical.js";
 import { getATMOptionTokens, getLTP, getClosedCandle, getLiveData } from "./getStrick.js";
 import { generateSignal } from "./signals.js";
 import { sendTelegram } from "./telegram.js";
-import { executeOrder } from "./order.js";
+import { executeOrder, checkExitAndCleanup, getPositions } from "./order.js";
 
 
 
@@ -19,6 +19,8 @@ let _cache = {
     raw1D: null,
     futureRaw1m: null,
 };
+
+let activeTrade = null; // Stores { symbol, indexSL, indexTGT, isPE }
 
 function useOrCache(key, fresh) {
     if (fresh.length) {
@@ -36,6 +38,24 @@ function useOrCache(key, fresh) {
 //  ENTRY ENGINE (live)
 // ═════════════════════════════════════════════════════════════════════════════
 export async function entryEngine(jwt, fromdate, todate, futureToken) {
+    // ── Check if previous trade exited and cleanup pending legs
+    // Now also checks Index Levels
+    if (activeTrade) {
+        await checkExitAndCleanup(jwt, activeTrade.symbol, {
+            currentIndexLTP: _cache.indexRaw1m?.[_cache.indexRaw1m.length - 1]?.close, // Best guess for current LTP
+            indexSL: activeTrade.indexSL,
+            indexTGT: activeTrade.indexTGT,
+            isPE: activeTrade.isPE
+        });
+
+        // Final sanity check: if position is closed, clear the tracker
+        const pos = await getPositions(jwt);
+        const stillIn = pos.find(p => p.tradingsymbol === activeTrade.symbol && parseInt(p.netqty) !== 0);
+        if (!stillIn) {
+            logger.info(`✅ Trade tracking for ${activeTrade.symbol} cleared.`);
+            activeTrade = null;
+        }
+    }
 
     // ── Fetch with retry-once on 0 candles (guards against first-loop cache miss)
     async function fetchWithRetry(key, fn) {
@@ -201,18 +221,10 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
 
             if (ltpData.length) {
                 optionLTP = parseFloat(ltpData[0].ltp.toFixed(2));
-                logger.info(`💰 Option LTP  : ${optionLTP}`);
+                optionSL = parseFloat(Math.max(0.1, optionLTP - r.dynamicSL).toFixed(1));
+                optionTarget = parseFloat(Math.max(0.1, optionLTP + r.dynamicTGT).toFixed(1));
 
-                // ── Option-level SL & Target via delta/gamma model
-                const levels = calculateOptionLevels({
-                    indexEntry: entryPrice,
-                    indexSL: slPrice,
-                    indexTarget: tgtPrice,
-                    optionLTP,
-                });
-                optionSL = parseFloat(levels.optionSL.toFixed(2));
-                optionTarget = parseFloat(levels.optionTarget.toFixed(2));
-                logger.info(`📐 Option SL   : ${optionSL}  | Option TGT: ${optionTarget}`);
+                logger.info(`💰 Option LTP  : ${optionLTP} | SL: ${optionSL} | TGT: ${optionTarget}`);
             } else {
                 logger.warn("⚠ Option LTP fetch returned empty");
             }
@@ -247,8 +259,6 @@ Entry       : ${entryPrice}
 Stop Loss   : ${slPrice}  (${r.dynamicSL} pts ⬆)
 Target      : ${tgtPrice}  (${r.dynamicTGT} pts ⬇)
 Risk:Reward : 1 : ${riskReward}
-Option SL   : ${optionSL ?? "N/A"}
-Option TGT  : ${optionTarget ?? "N/A"}
 ${optionLine}
 ━━━━━━━━━━━━━━━━━━
 📌 Conditions
@@ -282,8 +292,6 @@ Entry       : ${entryPrice}
 Stop Loss   : ${slPrice}  (${r.dynamicSL} pts ⬇)
 Target      : ${tgtPrice}  (${r.dynamicTGT} pts ⬆)
 Risk:Reward : 1 : ${riskReward}
-Option SL   : ${optionSL ?? "N/A"}
-Option TGT  : ${optionTarget ?? "N/A"}
 ${optionLine}
 ━━━━━━━━━━━━━━━━━━
 📌 Conditions
@@ -333,7 +341,15 @@ Volume OK   : ${r.volConfirm}
     await sendTelegram(msg);
 
     // ── Place / replace bracket order
-    await executeOrder(jwt, signalObj);
+    const res = await executeOrder(jwt, signalObj);
+    if (res?.orderNo) {
+        activeTrade = {
+            symbol: signalObj.optionSymbol,
+            indexSL: signalObj.slPrice,
+            indexTGT: signalObj.tgtPrice,
+            isPE: signalObj.signal === "PE"
+        };
+    }
 
     return signalObj;
 }
