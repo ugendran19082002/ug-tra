@@ -1,18 +1,37 @@
 // ─────────────────────────────────────────
 // EMA
+// FIX #10 — Seed with SMA of first `period` candles (not data[0].close)
+//           Eliminates EMA distortion on short daily arrays
 // ─────────────────────────────────────────
 export function calculateEMA(data, period = 20) {
+    if (!data || data.length < period) return Array(data?.length || 0).fill(null);
+
     const k = 2 / (period + 1);
-    let ema = data[0].close;
-    return data.map(c => (ema = c.close * k + ema * (1 - k)));
+
+    // ✅ SMA seed over first `period` candles
+    let ema = data.slice(0, period).reduce((sum, c) => sum + c.close, 0) / period;
+
+    const result = Array(period - 1).fill(null);
+    result.push(ema);
+
+    for (let i = period; i < data.length; i++) {
+        ema = data[i].close * k + ema * (1 - k);
+        result.push(ema);
+    }
+
+    return result;
 }
 
 // ─────────────────────────────────────────
 // RSI(14)
+// FIX #4 — Accepts `warnings[]`; pushes "RSI_FALLBACK" when data too short
 // ─────────────────────────────────────────
-export function calculateRSI(data, period = 14) {
+export function calculateRSI(data, period = 14, warnings = []) {
     const n = data.length;
-    if (n < period + 1) return Array(n).fill(50);
+    if (n < period + 1) {
+        warnings.push("RSI_FALLBACK");
+        return Array(n).fill(50);
+    }
 
     const result = Array(period).fill(50);
     let avgGain = 0, avgLoss = 0;
@@ -39,10 +58,14 @@ export function calculateRSI(data, period = 14) {
 
 // ─────────────────────────────────────────
 // ATR(14) — Wilder's smoothing
+// FIX #3 — Returns null array when data insufficient (no hardcoded 80 fallback)
 // ─────────────────────────────────────────
-export function calculateATR(data, period = 14) {
+export function calculateATR(data, period = 14, warnings = []) {
     const n = data.length;
-    if (n < period + 1) return Array(n).fill(null);
+    if (n < period + 1) {
+        warnings.push("ATR_FALLBACK");
+        return Array(n).fill(null); // ✅ null — caller must gate on this
+    }
 
     const tr = data.map((c, i) =>
         i === 0
@@ -67,13 +90,21 @@ export function calculateATR(data, period = 14) {
 
 // ─────────────────────────────────────────
 // ADX(14) — Wilder's smoothing
+// FIX #5 — Returns null-filled array when data < 2*period+1
+//           null (not 0) lets caller distinguish "no data" from "flat trend"
 // ─────────────────────────────────────────
-export function calculateADX(data, period = 14) {
+export function calculateADX(data, period = 14, warnings = []) {
     const n = data.length;
-    const result = new Array(n).fill(0);
-    if (n < 2 * period + 1) return result;
+    const minRequired = 2 * period + 1;
 
+    if (n < minRequired) {
+        warnings.push("ADX_SHORT");
+        return new Array(n).fill(null); // ✅ null, not 0
+    }
+
+    const result = new Array(n).fill(null);
     const tr = [], pdm = [], mdm = [];
+
     for (let i = 1; i < n; i++) {
         const up = data[i].high - data[i - 1].high;
         const dn = data[i - 1].low - data[i].low;
@@ -118,7 +149,7 @@ export function calculateADX(data, period = 14) {
 }
 
 // ─────────────────────────────────────────
-// SWING S/R
+// SWING S/R — unchanged
 // ─────────────────────────────────────────
 export function findSupportResistance(data, window = 8) {
     const supports = [], resistances = [];
@@ -135,7 +166,7 @@ export function findSupportResistance(data, window = 8) {
 }
 
 // ─────────────────────────────────────────
-// ROUND LEVELS
+// ROUND LEVELS — unchanged
 // ─────────────────────────────────────────
 export function getRoundLevels(price, step = 500) {
     const base = Math.floor(price / step) * step;
@@ -143,7 +174,7 @@ export function getRoundLevels(price, step = 500) {
 }
 
 // ─────────────────────────────────────────
-// CLEAN LEVELS
+// CLEAN LEVELS — unchanged
 // ─────────────────────────────────────────
 export function cleanLevels(levels, threshold = 20) {
     levels.sort((a, b) => a - b);
@@ -156,9 +187,43 @@ export function cleanLevels(levels, threshold = 20) {
 
 // ─────────────────────────────────────────
 // VOLUME SPIKE
+// FIX #2 — Threshold 1.1× → 1.5× for genuine spike detection
 // ─────────────────────────────────────────
 export function volumeSpike(data, index) {
     if (index < 10) return false;
     const avg = data.slice(index - 10, index).reduce((s, c) => s + c.volume, 0) / 10;
-    return data[index].volume > avg * 1.1; // 110% of average
+    return data[index].volume > avg * 1.5; // ✅ 150% — real spike, not noise
+}
+
+// ─────────────────────────────────────────
+// OI CLASSIFICATION — unchanged
+// ─────────────────────────────────────────
+export function classifyOI(last, prev) {
+    if (!last || !prev) {
+        return {
+            longBuildup: false,
+            shortBuildup: false,
+            shortCovering: false,
+            longUnwinding: false,
+            callOi: false,
+            putOi: false
+        };
+    }
+
+    const priceChange = last.close - prev.close;
+    const oiChange = (last.oi ?? 0) - (prev.oi ?? 0);
+
+    const longBuildup = priceChange > 0 && oiChange > 0;
+    const shortBuildup = priceChange < 0 && oiChange > 0;
+    const shortCovering = priceChange > 0 && oiChange < 0;
+    const longUnwinding = priceChange < 0 && oiChange < 0;
+
+    return {
+        longBuildup,
+        shortBuildup,
+        shortCovering,
+        longUnwinding,
+        callOi: longBuildup || shortCovering,
+        putOi: shortBuildup || longUnwinding
+    };
 }
