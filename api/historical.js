@@ -175,19 +175,17 @@ export async function getFuture(token, fromdate, todate, interval = 2, retries =
         candles.sort((a, b) => Date.parse(a[0]) - Date.parse(b[0]));
 
         // ─────────────────────────────
-        // 5️⃣ Stale Check
+        // 5️⃣ Log Last Candle Age (info only — no rejection)
+        // Real-time accuracy handled by getClosedCandle (SmartAPI)
         // ─────────────────────────────
         const lastTime = Date.parse(candles[candles.length - 1][0]);
-        const now = Date.now();
-        const diffMin = (now - lastTime) / 60000;
-        const allowedDelay = interval * 2;
+        const diffMin = (Date.now() - lastTime) / 60000;
 
         console.log("🕒 Last Candle:", candles[candles.length - 1][0]);
         console.log("⏱ Delay (min):", diffMin.toFixed(2));
 
-        if (diffMin > allowedDelay) {
-            logger.warn("❌ Stale candle data");
-            return [];
+        if (diffMin > 30) {
+            logger.warn(`⚠ Future data is ${diffMin.toFixed(1)} min old — check Upstox connection`);
         }
 
         // ─────────────────────────────

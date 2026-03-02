@@ -26,28 +26,15 @@ export function getLastCompletedCandleTime(timeframe = 1) {
     const now = new Date();
     const minutes = now.getMinutes();
 
-    // Floor to nearest timeframe boundary
+    // Floor down to nearest timeframe boundary, then subtract one full timeframe
+    // e.g. at 10:43 with 1m → floor=10:43 → subtract 1 → 10:42 (last completed)
+    // e.g. at 10:43 with 5m → floor=10:40 → subtract 5 → 10:35 (last completed)
     const flooredMin = Math.floor(minutes / timeframe) * timeframe;
-    now.setMinutes(flooredMin);
+    now.setMinutes(flooredMin - timeframe);
     now.setSeconds(0, 0);
-
-    // If we are exactly ON the boundary, we just crossed — go back one full timeframe
-    // e.g. at 09:45:00 exactly, the 09:40–09:45 candle JUST closed → use 09:40
-    if (minutes % timeframe === 0) {
-        now.setMinutes(now.getMinutes() - timeframe);
-    } else {
-        // e.g. at 09:43:27 → floor = 09:40 → last completed = one before = 09:35
-        now.setMinutes(now.getMinutes() - timeframe);
-    }
+    now.setMilliseconds(0);
 
     return now;
-}
-
-// Format Date → "YYYY-MM-DD HH:MM"
-export function formatCandleTime(date) {
-    const p = n => String(n).padStart(2, "0");
-    return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} ` +
-        `${p(date.getHours())}:${p(date.getMinutes())}`;
 }
 
 // ─────────────────────────────────────────
@@ -158,19 +145,20 @@ export async function getClosedCandle(jwtToken, exchange, token, timeframe = 1) 
     const data = await getLiveData(jwtToken, exchange, token);
     if (!data) return null;
 
-    // The last completed candle's close time
+    // The last completed candle's close time — as ISO UTC string
+    // MUST match historical API format: "2026-03-02T04:39:00+05:30"
     const closedTime = getLastCompletedCandleTime(timeframe);
-    const closedTimeStr = formatCandleTime(closedTime);
+    const closedTimeISO = closedTime.toISOString(); // e.g. "2026-03-02T04:39:00.000Z"
 
-    logger.info(`✅ Closed Candle Time [${timeframe}m]: ${closedTimeStr}`);
-    logger.info(`   LTP: ${data.ltp} | O:${data.open} H:${data.high} L:${data.low} Vol:${data.tradeVolume} OI:${data.opnInterest}`);
+    logger.info(`✅ Closed Candle [${timeframe}m]: ${closedTimeISO}`);
+    logger.info(`   LTP:${data.ltp} O:${data.open} H:${data.high} L:${data.low} Vol:${data.tradeVolume} OI:${data.opnInterest}`);
 
     return {
-        time: closedTimeStr,
+        time: closedTimeISO,          // ISO UTC — matches historical candle format
         open: data.open,
         high: data.high,
         low: data.low,
-        close: data.ltp,          // LTP is the close at candle boundary
+        close: data.ltp,              // LTP = close price at candle boundary
         volume: data.tradeVolume,
         oi: data.opnInterest ?? 0
     };

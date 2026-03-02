@@ -1,6 +1,6 @@
 import winston from "winston";
 import { logger, getISTTime } from "./logger.js";
-import { sleep } from "./helpers.js";
+import { sleep, buildTimeframe } from "./helpers.js";
 import { getHistorical, getFuture, format } from "./api/historical.js";
 import { generateSignal } from "./signals.js";
 
@@ -31,41 +31,69 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     btLogger.info(`  Window: ${btFrom} → ${btTo}`);
     btLogger.info("═══════════════════════════════════════════════════════");
 
-    // ── Fetch all timeframes
-    logger.info("📥 Fetching 1m index...");
-    const indexRaw1m = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_MINUTE", btFrom, btTo);
-    await sleep(500);
-    logger.info("📥 Fetching 5m index...");
-    const indexRaw5m = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "FIVE_MINUTE", btFrom, btTo);
-    await sleep(500);
-    logger.info("📥 Fetching 15m index...");
-    const indexRaw15m = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "FIFTEEN_MINUTE", btFrom, btTo);
-    await sleep(500);
+    // ── Fetch with exponential backoff: 5s → 15s → 30s
+    // AngelOne BSE historical blocks ALL requests when rate-limited
+    // Exponential wait gives the API time to unblock
+    async function fetchWithRetry(label, fn, maxRetries = 4) {
+        logger.info(`📥 Fetching ${label}...`);
+        const delays = [5000, 15000, 30000]; // 5s → 15s → 30s
+        let data = await fn();
+        let attempt = 0;
+        while (!data.length && attempt < maxRetries - 1) {
+            const wait = delays[attempt] ?? 30000;
+            logger.warn(`⚠ ${label} returned 0 — waiting ${wait / 1000}s before retry ${attempt + 1}/${maxRetries - 1}...`);
+            await sleep(wait);
+            data = await fn();
+            attempt++;
+        }
+        if (!data.length) logger.warn(`⚠ ${label} still 0 after ${maxRetries - 1} retries`);
+        return data;
+    }
+
+    const rawIndex1m = await fetchWithRetry("1m index", () => getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_MINUTE", btFrom, btTo));
+    await sleep(1000);
+    const rawIndex5m = await fetchWithRetry("5m index", () => getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "FIVE_MINUTE", btFrom, btTo));
+    await sleep(1000);
+    const rawIndex15m = await fetchWithRetry("15m index", () => getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "FIFTEEN_MINUTE", btFrom, btTo));
+    await sleep(1000);
 
     const p = n => String(n).padStart(2, "0");
     const warmupDate = new Date(btFrom);
     warmupDate.setDate(warmupDate.getDate() - 30);
     const dailyFrom = `${warmupDate.getFullYear()}-${p(warmupDate.getMonth() + 1)}-${p(warmupDate.getDate())} 09:15`;
 
-    logger.info("📥 Fetching daily index...");
-    const raw1D = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_DAY", dailyFrom, btTo);
-    await sleep(500);
-    logger.info("📥 Fetching 1m future...");
-    const futureRaw1m = await getFuture(futureToken, btFrom, btTo);
-    // const futureRaw1m = await getHistorical(jwt, "BFO", futureToken, "ONE_MINUTE", fromdate, todate);
+    const rawDaily = await fetchWithRetry("1D index", () => getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_DAY", dailyFrom, btTo));
+    await sleep(1000);
+    const rawFuture1m = await fetchWithRetry("1m future", () => getFuture(futureToken, btFrom, btTo));
 
-    if (!indexRaw1m.length || !futureRaw1m.length) {
-        logger.warn("⚠ Missing data — skipping");
+    // Only abort if future data is missing OR both 1m AND 5m index are missing
+    if (!rawFuture1m.length) {
+        logger.error("❌ Future data missing — cannot run backtest without price/OI history");
         process.exit(1);
     }
+    if (!rawIndex1m.length && !rawIndex5m.length) {
+        logger.error("❌ Both 1m and 5m index data missing — aborting backtest");
+        process.exit(1);
+    }
+    if (!rawIndex1m.length) {
+        logger.warn("⚠ 1m index data missing — aligned candles may be 0, will check below");
+    }
 
-    // ── Format + align index/future on matching timestamps
-    const index1mAll = format(indexRaw1m);
-    const index5mAll = format(indexRaw5m);
-    const index15mAll = format(indexRaw15m);
-    const future1mAll = format(futureRaw1m);
-    const data1DAll = format(raw1D);
+    // ── Format
+    const index1mAll = format(rawIndex1m);
+    const future1mAll = format(rawFuture1m);
 
+    // ── buildTimeframe fallbacks (same as entryEngine)
+    // 1 trading day = 375 one-minute candles (09:15 → 15:30)
+    const index5mAll = rawIndex5m.length ? format(rawIndex5m) : buildTimeframe(index1mAll, 5);
+    const index15mAll = rawIndex15m.length ? format(rawIndex15m) : buildTimeframe(index1mAll, 15);
+    const data1DAll = rawDaily.length ? format(rawDaily) : buildTimeframe(index1mAll, 375);
+
+    if (!rawIndex5m.length) logger.info("📐 5m  built from 1m candles");
+    if (!rawIndex15m.length) logger.info("📐 15m built from 1m candles");
+    if (!rawDaily.length) logger.info("📐 1D  built from 1m candles");
+
+    // ── Align index/future on matching timestamps
     const futureMap = new Map(future1mAll.map(c => [c.time, c]));
     const alignedIndex = [], alignedFuture = [];
     for (const c of index1mAll) {
@@ -78,9 +106,10 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     btLogger.info(`  1m: ${alignedIndex.length} | 5m: ${index5mAll.length} | 15m: ${index15mAll.length} | 1D: ${data1DAll.length}`);
 
     if (alignedIndex.length < 60) {
-        logger.error("❌ Not enough aligned candles.");
+        logger.error("❌ Not enough aligned candles — aborting backtest");
         process.exit(1);
     }
+
 
     const endBar = alignedIndex.length - 1;
     const trades = [];
