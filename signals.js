@@ -11,27 +11,69 @@ import {
 
 import { logger } from "./logger.js";
 
-// ═══════════════════════════════════════════════════════════════
-// generateSignal()
-// ═══════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────
+// BASE DIAGNOSTIC OBJECT
+// ─────────────────────────────────────────
+const getBaseDiag = (indexLTP = "0.00", futureLTP = "0.00") => ({
+    indexLTP,
+    futureLTP,
+    spread: "0.00",
+    dailyBias: "N/A",
+    emaAbove: false,
+    bullCandle: false,
+    bearCandle: false,
+    gapUp: false,
+    gapDown: false,
+    gapLabel: "N/A",
+    higherHigh: false,
+    higherLow: false,
+    lowerHigh: false,
+    lowerLow: false,
+    bullishStructure: false,
+    bearishStructure: false,
+    currentADX: "0.0",
+    currentRSI: "50.0",
+    currentATR: "0.00",
+    trendStrong: false,
+    rsiBullish: false,
+    rsiBearish: false,
+    trendUp: false,
+    trendDown: false,
+    dynamicSL: 0,
+    dynamicTGT: 0,
+    bigCandle: false,
+    strongBody: false,
+    closeNearHigh: false,
+    closeNearLow: false,
+    breakUp: false,
+    breakDown: false,
+    volConfirm: false,
+    equalHigh: false,
+    sweepHigh: false,
+    equalLow: false,
+    sweepLow: false,
+    bullishRejection: false,
+    bearishRejection: false,
+    exhaustedBull: false,
+    exhaustedBear: false,
+    finalSupports: [],
+    finalResistances: []
+});
+
 export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
 
-    // ─────────────────────────────────────────
-    // BASIC DATA VALIDATION
-    // ─────────────────────────────────────────
     if (
         !index1m?.length ||
         !index5m?.length ||
         !index15m?.length ||
         !future1m?.length || index5m.length < 8
     ) {
+        const ltp = index1m?.[index1m.length - 1]?.close?.toFixed(2) || "0.00";
+        const fltp = future1m?.[future1m.length - 1]?.close?.toFixed(2) || "0.00";
         return {
             signal: "NO_TRADE",
             reason: "insufficient timeframe data",
-            indexLTP: index1m?.[index1m.length - 1]?.close?.toFixed(2) || "0.00",
-            futureLTP: future1m?.[future1m.length - 1]?.close?.toFixed(2) || "0.00",
-            spread: "0.00",
-            dailyBias: "N/A"
+            ...getBaseDiag(ltp, fltp)
         };
     }
 
@@ -45,10 +87,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         return {
             signal: "NO_TRADE",
             reason: "invalid candle structure",
-            indexLTP: last1m?.close?.toFixed(2) || "0.00",
-            futureLTP: lastFuture?.close?.toFixed(2) || "0.00",
-            spread: "0.00",
-            dailyBias: "N/A"
+            ...getBaseDiag(last1m?.close?.toFixed(2), lastFuture?.close?.toFixed(2))
         };
     }
 
@@ -58,12 +97,11 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     const dailyData = (data1D?.length >= 2) ? data1D : [];
 
     if (dailyData.length < 2) {
+        const d = getBaseDiag(last1m.close.toFixed(2), lastFuture.close.toFixed(2));
         return {
             signal: "NO_TRADE",
             reason: "insufficient daily data",
-            indexLTP: last1m.close.toFixed(2),
-            futureLTP: lastFuture.close.toFixed(2),
-            dailyBias: "N/A",
+            ...d,
             spread: (lastFuture.close - last1m.close).toFixed(2)
         };
     }
