@@ -1,237 +1,175 @@
 import axios from "axios";
 import dotenv from "dotenv";
-import fs from "fs";
+import { buildHeaders } from "./helpers.js";
+import { logger } from "./logger.js";
 
 dotenv.config();
 
-const BASE_URL = "https://developer.paytmmoney.com";
-const GTT_URL = `${BASE_URL}/gtt/v2/gtt`;
-const TOKEN_FILE = "./.paytm_token";
+const BASE_URL = "https://apiconnect.angelone.in";
 
 // ─────────────────────────────────────────────────────
-// ACCESS TOKEN  (cached — REQUEST_TOKEN is one-time use)
+// PLACE REGULAR MKT ORDER (AngelOne)
 // ─────────────────────────────────────────────────────
-let _pmJwt = null;
-
-export async function generateAccessToken() {
-    if (_pmJwt) return _pmJwt;
-
-    // 1️⃣ Load from file written by paytmLogin.js (preferred)
-    if (fs.existsSync(TOKEN_FILE)) {
-        _pmJwt = fs.readFileSync(TOKEN_FILE, "utf-8").trim();
-        console.log("✅ Paytm Money Token loaded from file");
-        return _pmJwt;
-    }
-
-    // 2️⃣ Fallback: exchange REQUEST_TOKEN (one-time use)
+async function placeRegularOrder(jwtToken, symbol, token, transactionType, qty = 20) {
     try {
+        const body = {
+            variety: "NORMAL",
+            tradingsymbol: symbol,
+            symboltoken: String(token),
+            transactiontype: transactionType,
+            exchange: "BFO",
+            ordertype: "MARKET",
+            producttype: "CARRYFORWARD",
+            duration: "DAY",
+            quantity: String(qty),
+        };
+
         const res = await axios.post(
-            `${BASE_URL}/accounts/v2/gettoken`,
-            {
-                api_key: process.env.P_API_KEY,
-                api_secret_key: process.env.P_API_SECRET,
-                request_token: process.env.REQUEST_TOKEN
-            },
-            { headers: { "Content-Type": "application/json" } }
+            `${BASE_URL}/rest/secure/angelbroking/order/v1/placeOrder`,
+            body,
+            { headers: buildHeaders(jwtToken) }
         );
-        _pmJwt = res.data.access_token;
-        console.log("✅ Paytm Money Token Generated (via REQUEST_TOKEN)");
-        return _pmJwt;
+
+        if (res.data?.status) {
+            logger.info(`🟢 AngelOne Entry Order Placed: ${JSON.stringify(res.data.data)}`);
+            return res.data.data.orderid;
+        } else {
+            logger.error(`❌ AngelOne Entry Order Failed: ${res.data?.message}`);
+            return null;
+        }
     } catch (err) {
-        console.log("❌ Token Error:", err.response?.data || err.message);
-    }
-}
-
-// ─────────────────────────────────────────────────────
-// PLACE REGULAR MKT ORDER  (entry BUY)
-// ─────────────────────────────────────────────────────
-async function placeRegularOrder(jwtToken, token, qty = 20) {
-    const ist = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-    const mins = ist.getHours() * 60 + ist.getMinutes();
-    const isOpen = mins >= 555 && mins <= 930;
-
-    if (!isOpen) {
-        console.log("⛔ Derivative orders not allowed after market hours — skipping entry");
+        logger.error(`❌ AngelOne Entry Order Error: ${err.response?.data?.message || err.message}`);
         return null;
     }
+}
 
+// ─────────────────────────────────────────────────────
+// PLACE STOP LOSS ORDER (STOPLOSS_MARKET)
+// ─────────────────────────────────────────────────────
+async function placeStopLossOrder(jwtToken, symbol, token, triggerPrice, qty = 20) {
     try {
+        const body = {
+            variety: "STOPLOSS",
+            tradingsymbol: symbol,
+            symboltoken: String(token),
+            transactiontype: "SELL",
+            exchange: "BFO",
+            ordertype: "STOPLOSS_MARKET",
+            producttype: "CARRYFORWARD",
+            duration: "DAY",
+            price: "0", // Triggered at market
+            triggerprice: String(triggerPrice),
+            quantity: String(qty),
+        };
+
         const res = await axios.post(
-            `${BASE_URL}/orders/v1/place`,         // ✅ correct endpoint
-            {
-                source: "N",
-                txn_type: "B",
-                exchange: "BSE",
-                segment: "D",
-                product: "I",
-                security_id: String(token),
-                quantity: String(qty),
-                validity: "DAY",
-                order_type: "MKT",
-                price: "0",
-                order_ltp: "0",
-                mkt_type: "NL",
-                off_mkt_flag: false
-            },
-            {
-                headers: {
-                    "x-jwt-token": jwtToken,
-                    "Content-Type": "application/json"
-                }
-            }
+            `${BASE_URL}/rest/secure/angelbroking/order/v1/placeOrder`,
+            body,
+            { headers: buildHeaders(jwtToken) }
         );
-        console.log("🟢 Entry Order Placed:", res.data);
-        return res.data.order_no;
+
+        if (res.data?.status) {
+            logger.info(`✅ AngelOne SL-M Order Placed: ${res.data.data.orderid}`);
+            return res.data.data.orderid;
+        } else {
+            logger.error(`❌ AngelOne SL-M Failed: ${res.data?.message}`);
+            return null;
+        }
     } catch (err) {
-        console.log("❌ Entry Order | Status:", err.response?.status);
-        console.log("❌ Entry Order | Data  :", JSON.stringify(err.response?.data));
+        logger.error(`❌ AngelOne SL-M Error: ${JSON.stringify(err.response?.data || err.message)}`);
+        return null;
     }
 }
 
 // ─────────────────────────────────────────────────────
-// GET ALL ACTIVE GTTs
+// PLACE TARGET LIMIT ORDER
 // ─────────────────────────────────────────────────────
-async function getAllGTT(jwtToken) {
+async function placeLimitOrder(jwtToken, symbol, token, price, qty = 20) {
     try {
-        const res = await axios.get(GTT_URL, {
-            headers: { "x-jwt-token": jwtToken }
-        });
-        return res.data ?? [];
+        const body = {
+            variety: "NORMAL",
+            tradingsymbol: symbol,
+            symboltoken: String(token),
+            transactiontype: "SELL",
+            exchange: "BFO",
+            ordertype: "LIMIT",
+            producttype: "CARRYFORWARD",
+            duration: "DAY",
+            price: String(price),
+            quantity: String(qty),
+        };
+
+        const res = await axios.post(
+            `${BASE_URL}/rest/secure/angelbroking/order/v1/placeOrder`,
+            body,
+            { headers: buildHeaders(jwtToken) }
+        );
+
+        if (res.data?.status) {
+            logger.info(`✅ AngelOne Target Limit Placed: ${res.data.data.orderid}`);
+            return res.data.data.orderid;
+        } else {
+            logger.error(`❌ AngelOne Target Limit Failed: ${res.data?.message}`);
+            return null;
+        }
     } catch (err) {
-        console.log("❌ Get GTT Error:", err.response?.data || err.message);
+        logger.error(`❌ AngelOne Target Limit Error: ${JSON.stringify(err.response?.data || err.message)}`);
+        return null;
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// GET OPEN POSITIONS
+// ─────────────────────────────────────────────────────
+async function getPositions(jwtToken) {
+    try {
+        const res = await axios.get(
+            `${BASE_URL}/rest/secure/angelbroking/order/v1/getPosition`,
+            { headers: buildHeaders(jwtToken) }
+        );
+
+        if (res.data?.status && res.data.data) {
+            return res.data.data;
+        }
+        return [];
+    } catch (err) {
+        logger.error(`❌ AngelOne GetPositions Error: ${JSON.stringify(err.response?.data || err.message)}`);
         return [];
     }
 }
-
-// ─────────────────────────────────────────────────────
-// DELETE GTT
-// ─────────────────────────────────────────────────────
-async function deleteGTT(jwtToken, gttId) {
-    try {
-        const res = await axios.delete(`${BASE_URL}/gtt/v1/gtt/${gttId}`, {  // v1 for delete
-            headers: { "x-jwt-token": jwtToken }
-        });
-        console.log(`🗑 GTT ${gttId} deleted:`, res.data);
-    } catch (err) {
-        console.log("❌ Delete GTT Error:", err.response?.data || err.message);
-    }
-}
-
-// ─────────────────────────────────────────────────────
-// CREATE GTT OCO  (STOPLOSS + TARGET)
-// ─────────────────────────────────────────────────────
-// optionSL / optionTarget are MOVE values from calculateOptionLevels
-// Absolute prices:  SL  = ltp - slMove
-//                   TGT = ltp + tgtMove
-async function createGTTOCO(jwtToken, { optionToken, optionLTP, optionSL, optionTarget }, qty = 20) {
-    const slPrice = parseFloat((optionLTP - optionSL).toFixed(2));
-    const tgtPrice = parseFloat((optionLTP + optionTarget).toFixed(2));
-    // SL limit slightly below trigger (~2% buffer) so fast moves still fill
-    const slLimit = parseFloat((slPrice * 0.98).toFixed(2));
-
-    console.log(`📐 GTT OCO | LTP:${optionLTP}  SL trigger:${slPrice} limit:${slLimit}  TGT:${tgtPrice}`);
-
-    try {
-        const res = await axios.post(
-            GTT_URL,
-            {
-                segment: "D",
-                exchange: "BSE",
-                security_id: String(optionToken),
-                product_type: "M",        // Margin (derivatives)
-                set_price: String(optionLTP),
-                transaction_type: "S",         // SELL to exit
-                trigger_type: "OCO",
-                transaction_details: [
-                    {
-                        sub_type: "STOPLOSS",
-                        quantity: String(qty),
-                        trigger_price: String(slPrice),
-                        limit_price: String(slLimit),   // LMT ~2% below trigger
-                        order_type: "LMT"
-                    },
-                    {
-                        sub_type: "TARGET",
-                        quantity: String(qty),
-                        trigger_price: String(tgtPrice),
-                        limit_price: String(tgtPrice),
-                        order_type: "LMT"
-                    }
-                ]
-            },
-            {
-                headers: {
-                    "x-jwt-token": jwtToken,
-                    "Content-Type": "application/json"
-                }
-            }
-        );
-        console.log("✅ GTT OCO Created:", res.data);
-        return res.data?.id;
-    } catch (err) {
-        console.log("❌ GTT Create Error:", err.response?.data || err.message);
-    }
-}
-
-// ─────────────────────────────────────────────────────
-// MAIN ORDER ORCHESTRATOR
-// ─────────────────────────────────────────────────────
-// Flow:
-//  1. Get Paytm Money JWT
-//  2. Cancel existing ACTIVE GTT on this token (if any)
-//  3. Place regular MKT BUY (entry)
-//  4. Create GTT OCO (STOPLOSS + TARGET exit)
-export async function executeOrder(_unusedJwt, signal) {
-    const { optionToken, optionLTP, optionSL, optionTarget } = signal;
+export async function executeOrder(jwt, signal) {
+    const { signal: type, optionToken, ceSymbol, peSymbol, optionLTP, optionSL, optionTarget } = signal;
 
     if (!optionToken || optionLTP == null) {
-        console.log("⚠ executeOrder: missing token or LTP — skipping order");
+        logger.warn("⚠ executeOrder: missing token or LTP — skipping order");
         return;
     }
 
-    // 0️⃣  Paytm Money JWT
-    const pmJwt = await generateAccessToken();
-    if (!pmJwt) {
-        console.log("❌ executeOrder: could not get Paytm Money token — skipping order");
+    const symbol = type === "CE" ? ceSymbol : peSymbol;
+
+    // ── Check if already in a position for this symbol
+    const positions = await getPositions(jwt);
+    const existing = positions.find(p => p.tradingsymbol === symbol && parseInt(p.netqty) !== 0);
+
+    if (existing) {
+        logger.warn(`⚠ executeOrder: Already in position for ${symbol} (Qty: ${existing.netqty}) — skipping entry`);
         return;
     }
 
-    // 1️⃣  Cancel any existing active GTT on this token
-    const allGTTs = await getAllGTT(pmJwt);
-    const gttList = Array.isArray(allGTTs) ? allGTTs
-        : Array.isArray(allGTTs?.data) ? allGTTs.data
-            : [];
-    const existing = gttList.filter(g =>
-        String(g.security_id) === String(optionToken) &&
-        ["ACTIVE", "CREATED"].includes((g.status ?? "").toUpperCase())
-    );
+    const transactionType = "BUY";
 
-    for (const g of existing) {
-        console.log(`🔄 Cancelling existing GTT ${g.id} for token ${optionToken}`);
-        await deleteGTT(pmJwt, g.id);
-    }
-
-    if (existing.length) await new Promise(r => setTimeout(r, 1000));
-
-    // 2️⃣  Place entry BUY
-    const orderNo = await placeRegularOrder(pmJwt, optionToken);
+    // 1️⃣ Place entry BUY
+    const orderNo = await placeRegularOrder(jwt, symbol, optionToken, transactionType);
     if (!orderNo) {
-        console.log("❌ Entry order failed — skipping GTT creation");
+        logger.error("❌ AngelOne Entry order failed — skipping GTT creation");
         return;
     }
 
-    // small wait for entry to register
-    await new Promise(r => setTimeout(r, 1500));
+    // 2️⃣ Place SL-M Order
+    const slOrderId = await placeStopLossOrder(jwt, symbol, optionToken, optionSL, 20);
 
-    // 3️⃣  Create GTT OCO for exit management
-    const gttId = await createGTTOCO(pmJwt, {
-        optionToken,
-        optionLTP,
-        optionSL: optionSL ?? 10,
-        optionTarget: optionTarget ?? 20,
-    });
+    // 3️⃣ Place Target Limit Order
+    const tgtOrderId = await placeLimitOrder(jwt, symbol, optionToken, optionTarget, 20);
 
-    if (gttId) console.log(`✅ GTT OCO active: ${gttId}`);
-
-    return { orderNo, gttId };
+    return { orderNo, slOrderId, tgtOrderId };
 }

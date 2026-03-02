@@ -57,7 +57,8 @@ async function main() {
 
             const liveFrom = getTodayFromDate();
             console.log("liveFrom", liveFrom);
-            const liveTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
+            const liveTo = "2026-03-02 09:50"; // ✅ FIX: replace with formatDateTime() for real live use
+            // const liveTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
             console.log("liveTo", liveTo);
 
             logger.info(`📅 Window: ${liveFrom} → ${liveTo}`);

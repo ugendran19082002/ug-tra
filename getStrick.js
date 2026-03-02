@@ -85,7 +85,9 @@ export async function getATMOptionTokens(symbolName = "SENSEX", price, refDate =
         strike: atmStrike,
         expiry: weeklyExpiry,
         ceToken: ce.token,
-        peToken: pe.token
+        ceSymbol: ce.symbol,
+        peToken: pe.token,
+        peSymbol: pe.symbol
     };
 }
 

@@ -150,8 +150,10 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
     logger.info(`trendUp:${r.trendUp} trendDown:${r.trendDown}`);
     logger.info(`breakUp:${r.breakUp} breakDown:${r.breakDown} | breakAbove:${r.breakAbove} breakBelow:${r.breakBelow}`);
     logger.info(`bigCandle:${r.bigCandle} strongBody:${r.strongBody} | closeNearHigh:${r.closeNearHigh} closeNearLow:${r.closeNearLow} | volConfirm:${r.volConfirm}`);
+    logger.info(`🔷 Sweep     : EqHi:${r.equalHigh} SweepHi:${r.sweepHigh} BearRej:${r.bearishRejection} | EqLo:${r.equalLow} SweepLo:${r.sweepLo} BullRej:${r.bullishRejection}`);
     logger.info(`Supports: ${JSON.stringify(r.finalSupports)}`);
     logger.info(`Resistances: ${JSON.stringify(r.finalResistances)}`);
+
 
     if (r.signal === "NO_TRADE") {
         logger.info(`⚪ NO TRADE | ${r.reason ?? "conditions not met"}`);
@@ -160,7 +162,13 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
 
     // ── Price levels
     const isPE = r.signal === "PE";
-    const entryPrice = parseFloat(r.indexLTP);
+    const entryPrice = parseFloat(r.indexLTP) || index1m[index1m.length - 1].close;
+
+    if (isNaN(entryPrice)) {
+        logger.error("❌ Entry Price is NaN - Aborting Trade");
+        return { signal: "NO_TRADE", reason: "NaN Entry Price" };
+    }
+
     const slPrice = isPE
         ? parseFloat((entryPrice + r.dynamicSL).toFixed(2))
         : parseFloat((entryPrice - r.dynamicSL).toFixed(2));
@@ -172,17 +180,17 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
     logger.info(`🎯 Entry:${entryPrice} | SL:${slPrice} | TGT:${tgtPrice} | RR:${riskReward}`);
 
     // ── ATM Option Token fetch
+    let atm = null;
     let optionToken = null, optionSymbol = null, optionLTP = null, atmStrike = null, optionExpiry = null;
     let optionSL = null, optionTarget = null;
-
     try {
-        const atm = await getATMOptionTokens("SENSEX", entryPrice);
+        atm = await getATMOptionTokens("SENSEX", entryPrice);
 
         if (atm) {
             atmStrike = atm.strike;
             optionExpiry = new Date(atm.expiry).toDateString();
             optionToken = isPE ? atm.peToken : atm.ceToken;
-            optionSymbol = isPE ? `SENSEX${atm.strike}PE` : `SENSEX${atm.strike}CE`;
+            optionSymbol = isPE ? atm.peSymbol : atm.ceSymbol;
 
             logger.info(`📌 ATM Strike  : ${atmStrike}`);
             logger.info(`📌 Option      : ${optionSymbol} | Token: ${optionToken}`);
@@ -312,6 +320,8 @@ Volume OK   : ${r.volConfirm}
         trendStrong: r.trendStrong,
         optionToken,
         optionSymbol,
+        ceSymbol: atm?.ceSymbol,
+        peSymbol: atm?.peSymbol,
         optionLTP,
         optionSL,
         optionTarget,

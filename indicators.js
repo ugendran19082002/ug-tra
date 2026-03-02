@@ -160,5 +160,5 @@ export function cleanLevels(levels, threshold = 20) {
 export function volumeSpike(data, index) {
     if (index < 10) return false;
     const avg = data.slice(index - 10, index).reduce((s, c) => s + c.volume, 0) / 10;
-    return data[index].volume > avg * 1.5;
+    return data[index].volume > avg * 1.1; // 110% of average
 }
