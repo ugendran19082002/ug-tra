@@ -1,6 +1,6 @@
 import axios from "axios";
 import dotenv from "dotenv";
-import { buildHeaders } from "./helpers.js";
+import { buildHeaders, sleep } from "./helpers.js";
 import { logger } from "./logger.js";
 
 dotenv.config();
@@ -197,6 +197,7 @@ export async function marketExit(jwtToken, symbol) {
         const side = parseInt(p.netqty) > 0 ? "SELL" : "BUY";
 
         logger.info(`🚨 SENSEX INDEX EXIT TRIGGERED: Exiting ${symbol} Qty:${qty} Side:${side}`);
+        await sleep(1000); // Delay before position check
 
         const body = {
             variety: "NORMAL",
@@ -283,7 +284,16 @@ export async function cleanupOrders(jwtToken, symbol) {
     if (pendingOrders.length > 0) {
         logger.info(`🧹 Cleaning up ${pendingOrders.length} pending orders for ${symbol}`);
         for (const o of pendingOrders) {
-            await cancelOrder(jwtToken, o.variety, o.orderid);
+
+            let variety = o.variety || "NORMAL";
+            if (!o.variety && String(o.ordertype).toUpperCase().includes("STOPLOSS")) {
+                variety = "STOPLOSS";
+            }
+
+            logger.info(`   - Cancelling order ${o.orderid} (Variety: ${variety})`);
+            await cancelOrder(jwtToken, variety, o.orderid);
+            await sleep(800); // 800ms gap to avoid rate limits
+
         }
     }
 }
@@ -300,6 +310,7 @@ export async function executeOrder(jwt, signal) {
 
     // ── First, clean up any old pending orders for this symbol
     await cleanupOrders(jwt, symbol);
+    await sleep(1000); // Wait after cleanup before checking positions
 
     // ── Check if already in a position for this symbol
     const positions = await getPositions(jwt);
@@ -329,8 +340,13 @@ export async function executeOrder(jwt, signal) {
         return;
     }
 
+    // Give broker time to process entry
+    await sleep(1000);
+
     // 2️⃣ Place SL-M Order
     const slOrderId = await placeStopLossOrder(jwt, symbol, optionToken, optionSL, 20);
+
+    await sleep(500);
 
     // 3️⃣ Place Target Limit Order
     const tgtOrderId = await placeLimitOrder(jwt, symbol, optionToken, optionTarget, 20);
