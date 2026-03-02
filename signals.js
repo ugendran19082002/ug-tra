@@ -132,8 +132,8 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     const rawATR = atrArr[atrArr.length - 1];
     const currentATR = rawATR > 0 ? rawATR : 80;
 
-    const dynamicSL = parseFloat(Math.min(100, currentATR).toFixed(2));
-    const dynamicTGT = parseFloat(Math.max(100, currentATR * 2.5).toFixed(2));
+    const dynamicSL = parseFloat(Math.max(20, currentATR * 0.7).toFixed(2));
+    const dynamicTGT = parseFloat(Math.max(100, currentATR * 2.75).toFixed(2));
 
     const adxArr = calculateADX(index5m, 14);
     const currentADX = adxArr[adxArr.length - 1];
@@ -282,25 +282,6 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     // ─────────────────────────────────────────
     // ENTRY CONDITIONS
     // ─────────────────────────────────────────
-    if (
-        bullishRejection &&
-        trendStrong &&
-        trendUp
-    ) {
-        return { signal: "CE", reason: "liq_sweep_low", ...diag };
-    }
-
-    if (
-        bearishRejection &&
-        trendStrong &&
-        trendDown
-    ) {
-        return { signal: "PE", reason: "liq_sweep_high", ...diag };
-    }
-
-    if (dailyBias === "NEUTRAL") {
-        return { signal: "NO_TRADE", reason: "daily bias neutral", ...diag };
-    }
 
     if (
         dailyBias === "BEARISH" &&
@@ -324,6 +305,25 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         !gapDown
     ) {
         return { signal: "CE", reason: "trend_continuation_up", ...diag };
+    }
+    if (
+        bullishRejection &&
+        trendStrong &&
+        trendUp
+    ) {
+        return { signal: "CE", reason: "liq_sweep_low", ...diag };
+    }
+
+    if (
+        bearishRejection &&
+        trendStrong &&
+        trendDown
+    ) {
+        return { signal: "PE", reason: "liq_sweep_high", ...diag };
+    }
+
+    if (dailyBias === "NEUTRAL") {
+        return { signal: "NO_TRADE", reason: "daily bias neutral", ...diag };
     }
 
     return { signal: "NO_TRADE", reason: "no conditions met", ...diag };
