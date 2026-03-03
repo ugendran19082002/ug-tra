@@ -212,8 +212,8 @@ export async function getFuture(token, fromdate, todate, interval = 2, retries =
         console.log("High   :", lastCandle[2]);
         console.log("Low    :", lastCandle[3]);
         console.log("Close  :", lastCandle[4]);
-        console.log("Volume :", lastCandle[5]);
-        console.log("OI     :", lastCandle[6] ?? "N/A");
+        logger.info(`  Volume : ${lastCandle[5]}`);
+        logger.info(`  OI     : ${lastCandle[6] ?? "N/A"}`);
 
         logger.debug(`OI Sample:\n${JSON.stringify(filteredCandles.slice(0, 2), null, 2)}`);
 

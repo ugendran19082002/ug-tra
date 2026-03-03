@@ -85,7 +85,9 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
     // ── Price levels
     const isPE = r.signal === "PE";
     const lastCandle = index1m[index1m.length - 1];
-    const entryPrice = parseFloat(lastCandle.close.toFixed(2));
+    // const entryPrice = parseFloat(lastCandle.close.toFixed(2));
+    const entryPrice = parseFloat(r.indexLTP) || index1m[index1m.length - 1].close;
+
     const slPrice = isPE
         ? parseFloat((entryPrice + r.dynamicSL).toFixed(2))
         : parseFloat((entryPrice - r.dynamicSL).toFixed(2));

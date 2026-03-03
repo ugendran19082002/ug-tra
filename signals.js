@@ -246,8 +246,9 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     }
 
     const currentATR = rawATR;
+
     const dynamicSL = parseFloat(Math.max(20, currentATR * 0.85).toFixed(2));
-    const dynamicTGT = parseFloat(Math.max(100, currentATR * 2.99).toFixed(2));
+    const dynamicTGT = parseFloat(Math.max(100, currentATR * 2.5).toFixed(2));
 
     const adxArr = calculateADX(index5m, 14, warnings);
     const rawADX = adxArr[adxArr.length - 1];
@@ -302,7 +303,19 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     // ─────────────────────────────────────────
     // LIQUIDITY SWEEP
     // ─────────────────────────────────────────
-    const LIQ_THRESHOLD = Math.max(currentATR * 0.2, 15);
+    // const LIQ_THRESHOLD = Math.max(currentATR * 0.2, 15);
+
+    let LIQ_THRESHOLD;
+
+    if (currentADX > 30) {
+        LIQ_THRESHOLD = currentATR * 0.25;
+    } else if (currentADX > 20) {
+        LIQ_THRESHOLD = currentATR * 0.2;
+    } else {
+        LIQ_THRESHOLD = Math.max(currentATR * 0.15, 18);
+    }
+
+    LIQ_THRESHOLD = Math.min(LIQ_THRESHOLD, 150); // cap
 
     const recent = index5m.slice(-6, -2);
     const recentHighs = recent.map(c => c.high);
@@ -348,9 +361,20 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         strongBody5m &&
         volConfirm;
 
-    const exhaustedBull = (last5m.close - recentMinLow) > currentATR * 2;
-    const exhaustedBear = (recentMaxHigh - last5m.close) > currentATR * 2;
+    // const exhaustedBull = (last5m.close - recentMinLow) > currentATR * 3.3;
+    // const exhaustedBear = (recentMaxHigh - last5m.close) > currentATR * 3.3;
 
+
+    const exhaustionFactor =
+        currentADX > 30 ? 3 :
+            currentADX > 22 ? 2.5 :
+                1.6;
+
+    const exhaustedBull =
+        (last5m.close - recentMinLow) > currentATR * exhaustionFactor;
+
+    const exhaustedBear =
+        (recentMaxHigh - last5m.close) > currentATR * exhaustionFactor;
     // ─────────────────────────────────────────
     // FIX #6 — Compute absolute SL and Target price levels per side
     //          CE = buy call → SL below entry, TGT above entry
@@ -361,6 +385,22 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     const ceTGTPrice = parseFloat((entryPrice + dynamicTGT).toFixed(2));
     const peSLPrice = parseFloat((entryPrice + dynamicSL).toFixed(2));
     const peTGTPrice = parseFloat((entryPrice - dynamicTGT).toFixed(2));
+
+    // ─────────────────────────────────────────
+    // FUTURE 5M + OI
+    // ─────────────────────────────────────────
+    const future5m = buildTimeframe(future1m, 5);
+    const lastFuture5m = (future5m && future5m.length > 0) ? future5m[future5m.length - 1] : { volume: 0, oi: 0 };
+    const prevFuture5m = (future5m && future5m.length > 1) ? future5m[future5m.length - 2] : null;
+
+    if (!future5m || future5m.length < 2) {
+        return {
+            signal: "NO_TRADE",
+            reason: "insufficient_oi_data",
+            ...getBaseDiag(last1m.close.toFixed(2), lastFuture.close.toFixed(2)),
+            warnings: [...warnings, "OI_INSUFFICIENT"]
+        };
+    }
 
     // ─────────────────────────────────────────
     // DIAGNOSTICS
@@ -408,22 +448,13 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         bearishRejection,
         exhaustedBull,
         exhaustedBear,
+        volume: lastFuture5m.volume,
+        oi: lastFuture5m.oi,
+        gapPoints,
         finalSupports,
         finalResistances,
         warnings          // ✅ FIX #7 — exposes RSI_FALLBACK, ATR_FALLBACK etc.
     };
-
-    // ─────────────────────────────────────────
-    // FUTURE 5M + OI
-    // ─────────────────────────────────────────
-    const future5m = buildTimeframe(future1m, 5);
-
-    if (!future5m || future5m.length < 2) {
-        return { signal: "NO_TRADE", reason: "insufficient_oi_data", ...diag };
-    }
-
-    const lastFuture5m = future5m[future5m.length - 1];
-    const prevFuture5m = future5m[future5m.length - 2];
 
     const oiData = classifyOI(lastFuture5m, prevFuture5m);
     const { callOi, putOi } = oiData;
@@ -443,6 +474,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         bullishRejection &&
         trendStrong &&
         trendUp &&
+        // putOi &&
         !exhaustedBull;
 
     const bearishLiqSetup =
@@ -450,9 +482,12 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         bearishRejection &&
         trendStrong &&
         trendDown &&
+        // callOi &&
         !exhaustedBear;
 
     if (bullishLiqSetup) {
+        console.log("currentATR", currentATR);
+
         return {
             signal: "CE",
             reason: "liq_sweep_low",
@@ -463,6 +498,8 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     }
 
     if (bearishLiqSetup) {
+        console.log("currentATR", currentATR);
+
         return {
             signal: "PE",
             reason: "liq_sweep_high",
@@ -483,9 +520,11 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         rsiBearish &&
         (trendDown || bigCandle) &&
         !(gapDown && !breakDown && !gapDownFilled) && // ✅ FIX #8
-        volConfirm &&
-        putOi &&
-        !exhaustedBear;
+        volConfirm
+    // &&
+    // putOi
+    // &&
+    // !exhaustedBear;
 
     const bullishTrendSetup =
         dailyBias === "BULLISH" &&
@@ -493,9 +532,11 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         rsiBullish &&
         (trendUp || bigCandle) &&
         !(gapUp && !breakUp && !gapUpFilled) &&       // ✅ FIX #8
-        volConfirm &&
-        callOi &&
-        !exhaustedBull;
+        volConfirm
+    // &&
+    // callOi
+    //  &&
+    // !exhaustedBull;
 
     if (bearishTrendSetup) {
         return {
