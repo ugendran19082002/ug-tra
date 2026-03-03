@@ -19,20 +19,54 @@ export function getLocalIP() {
 
 
 export function buildTimeframe(data, size) {
+    if (!data.length) return [];
+
     const result = [];
-    for (let i = 0; i < data.length; i += size) {
-        const chunk = data.slice(i, i + size);
-        if (chunk.length < size) continue;
-        result.push({
-            time: chunk[0].time,
-            open: chunk[0].open,
-            high: Math.max(...chunk.map(c => c.high)),
-            low: Math.min(...chunk.map(c => c.low)),
-            close: chunk[chunk.length - 1].close,
-            volume: chunk.reduce((s, c) => s + c.volume, 0),
-            oi: chunk.reduce((s, c) => s + c.oi, 0)
-        });
+    let bucket = [];
+    let currentMinute = null;
+
+    // Helper to aggregate a bucket of candles
+    const aggregate = (chunk) => ({
+        time: chunk[0].time,
+        open: chunk[0].open,
+        high: Math.max(...chunk.map(c => c.high)),
+        low: Math.min(...chunk.map(c => c.low)),
+        close: chunk[chunk.length - 1].close,
+        volume: chunk.reduce((s, c) => s + (c.volume || 0), 0),
+        oi: chunk.reduce((s, c) => s + (c.oi || 0), 0)
+    });
+
+    for (const c of data) {
+        const date = new Date(c.time);
+        const totalMinutes = date.getHours() * 60 + date.getMinutes();
+
+        // Alignment base: 09:15 is the start of trading
+        // We calculate how many minutes since 09:15
+        const marketStartMinutes = 9 * 60 + 15;
+        const diff = totalMinutes - marketStartMinutes;
+
+        // The bucket index for this candle (e.g., 0-4 for 5m, 0-14 for 15m)
+        const bucketStart = Math.floor(diff / size) * size;
+
+        if (currentMinute === null) {
+            currentMinute = bucketStart;
+        }
+
+        if (bucketStart === currentMinute) {
+            bucket.push(c);
+        } else {
+            if (bucket.length) {
+                result.push(aggregate(bucket));
+            }
+            bucket = [c];
+            currentMinute = bucketStart;
+        }
     }
+
+    if (bucket.length) {
+        result.push(aggregate(bucket));
+    }
+
     return result;
 }
 
@@ -89,9 +123,6 @@ export function formatCurrentDateTime() {
     // Remove seconds & milliseconds
     now.setSeconds(0, 0);
 
-    // Go 1 minute back
-    now.setMinutes(now.getMinutes() - 1);
-
     const p = n => String(n).padStart(2, "0");
 
     return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ` +
@@ -100,7 +131,7 @@ export function formatCurrentDateTime() {
 // ─────────────────────────────────────────
 // DYNAMIC DATE HELPERS
 // ─────────────────────────────────────────
-export function getTodayFromDate(daysBack = 20) {
+export function getTodayFromDate(daysBack = 30) {
     const p = n => String(n).padStart(2, "0");
     const d = new Date();
     d.setDate(d.getDate() - daysBack);
@@ -139,4 +170,73 @@ export function formatISTDateTime() {
     const min = String(now.getMinutes()).padStart(2, "0");
 
     return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+}
+
+/**
+ * Returns the timestamp of the last candle that SHOULD be closed.
+ * Market closes at 15:30, so if it's 15:31, last closed is 15:30.
+ * If it's 09:16, last closed is 09:15.
+ */
+export function getExpectedLastCandleTime() {
+    // Force IST for calculations
+    const nowIst = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+
+    const expected = new Date(nowIst);
+    expected.setSeconds(0, 0);
+    expected.setMilliseconds(0);
+
+    // The candle that just closed is (CurrentMinute - 1)
+    expected.setMinutes(expected.getMinutes() - 1);
+
+    // Market Bound Constraints (09:15 to 15:30)
+    const h = expected.getHours();
+    const m = expected.getMinutes();
+    const mins = h * 60 + m;
+    const marketOpen = 9 * 60 + 15;
+    const marketClose = 15 * 60 + 30;
+
+    if (mins < marketOpen) {
+        // Before market, return previous day's last candle (09:15) or let engine handle it
+        // We'll set it to 09:15 of current day for sync logic to wait/fallback
+        expected.setHours(9, 15, 0, 0);
+    } else if (mins > marketClose) {
+        expected.setHours(15, 30, 0, 0);
+    }
+
+    const p = n => String(n).padStart(2, "0");
+    return `${expected.getFullYear()}-${p(expected.getMonth() + 1)}-${p(expected.getDate())} ${p(expected.getHours())}:${p(expected.getMinutes())}`;
+}
+
+export function calculateOptionLevels({
+    indexEntry,
+    indexSL,
+    indexTarget,
+    optionLTP,
+    delta = 0.49,
+    gamma = 0.0007,
+}) {
+    // 1️⃣ Index Moves
+    const indexSLMove = Math.abs(indexSL - indexEntry);
+    const indexTargetMove = Math.abs(indexEntry - indexTarget);
+
+    // 2️⃣ SL Side Delta Adjust
+    const deltaChangeSL = gamma * indexSLMove;
+    const newDeltaSL = delta + deltaChangeSL;
+    const avgDeltaSL = (delta + newDeltaSL) / 2;
+
+    const optionSLMove = indexSLMove * avgDeltaSL;
+    const optionSL = optionLTP - optionSLMove;
+
+    // 3️⃣ Target Side Delta Adjust
+    const deltaChangeTarget = gamma * indexTargetMove;
+    const newDeltaTarget = delta + deltaChangeTarget;
+    const avgDeltaTarget = (delta + newDeltaTarget) / 2;
+
+    const optionTargetMove = indexTargetMove * avgDeltaTarget;
+    const optionTarget = optionLTP + optionTargetMove;
+
+    return {
+        optionSL: optionSLMove,
+        optionTarget: optionTargetMove
+    };
 }

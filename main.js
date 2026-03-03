@@ -3,7 +3,7 @@ dotenv.config();
 
 import { logger, getISTTime } from "./logger.js";
 import { sleep, getTodayFromDate, formatCurrentDateTime } from "./helpers.js";
-import { login } from "./api/auth.js";
+import { login, clearTokenCache } from "./api/auth.js";
 import { getFutureToken } from "./api/tokens.js";
 import { entryEngine } from "./entryEngine.js";
 import { backtest } from "./backtest.js";
@@ -21,9 +21,10 @@ async function main() {
         // const btFrom = process.env.BT_FROM ?? "2026-02-15 09:15";
         // const btTo = process.env.BT_TO ?? "2026-02-27 15:30";
 
-        const btFrom = getTodayFromDate();
+        const btFrom = getTodayFromDate(20);
         console.log("btFrom", btFrom);
-        const btTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
+        // const btTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
+        const btTo = "2026-03-02 11:11"; // ✅ FIX: replace with formatDateTime() for real live use
         console.log("btTo", btTo);
         logger.info(`📅 Window: ${btFrom} → ${btTo}`);
 
@@ -43,11 +44,9 @@ async function main() {
     // ── LIVE TRADING MODE
     logger.info("🚀 BOT STARTED");
 
-    const jwt = await login();
-    const futureToken = await getFutureToken();
-
     let lastSignal = null;
     let iteration = 0;
+    let forceLogin = false;
 
     while (true) {
         iteration++;
@@ -55,11 +54,15 @@ async function main() {
         try {
             logger.info(`🔄 Loop #${iteration} | IST: ${getISTTime()}`);
 
-            const liveFrom = getTodayFromDate();
+            const jwt = await login(forceLogin);
+            forceLogin = false; // reset after success
+
+            const liveFrom = getTodayFromDate(20);
             console.log("liveFrom", liveFrom);
-            // const liveTo = "2026-03-02 09:54"; // ✅ FIX: replace with formatDateTime() for real live use
-            const liveTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
+            const liveTo = "2026-02-27 10:01"; // ✅ FIX: replace with formatDateTime() for real live use
+            // const liveTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
             console.log("liveTo", liveTo);
+            const futureToken = await getFutureToken("SENSEX");
 
             logger.info(`📅 Window: ${liveFrom} → ${liveTo}`);
 
@@ -83,6 +86,11 @@ async function main() {
 
         } catch (err) {
             logger.error(`❌ Loop #${iteration} Error: ${err.message}`);
+            if (err.message === "INVALID_TOKEN") {
+                logger.warn("🚨 Session expired — clearing cache and re-logging on next loop...");
+                clearTokenCache();
+                forceLogin = true;
+            }
         }
 
         await sleep(15_000);

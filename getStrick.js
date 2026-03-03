@@ -109,59 +109,15 @@ export async function getLTP(jwtToken, exchangeTokens) {
         return response.data.data.fetched;
 
     } catch (err) {
-        logger.error(`❌ LTP Fetch Error: ${err.response?.data?.message || err.message}`);
+        const errorMsg = err.response?.data?.message || err.message;
+        const errorCode = err.response?.data?.errorCode;
+
+        if (errorCode === "AG8001" || errorMsg === "Invalid Token") {
+            throw new Error("INVALID_TOKEN");
+        }
+
+        logger.error(`❌ LTP Fetch Error: ${errorMsg}`);
         return [];
     }
 }
 
-// ─────────────────────────────────────────
-// FULL LIVE DATA (LTP + OHLC + OI + Volume)
-// ─────────────────────────────────────────
-export async function getLiveData(jwtToken, exchange, token) {
-    try {
-        const response = await axios.post(
-            MARKET_URL,
-            { mode: "FULL", exchangeTokens: { [exchange]: [token] } },
-            { headers: buildHeaders(jwtToken) }
-        );
-
-        if (!response.data?.status) {
-            throw new Error(response.data?.message || "Live data fetch failed");
-        }
-
-        const fetched = response.data.data?.fetched ?? [];
-        return fetched[0] ?? null;
-
-    } catch (err) {
-        logger.error(`❌ Live Data Error: ${err.response?.data?.message || err.message}`);
-        return null;
-    }
-}
-
-// ─────────────────────────────────────────
-// GET CLOSED CANDLE FROM LIVE DATA
-// Only returns data for last COMPLETED candle
-// Never uses currently-forming (incomplete) candle
-// ─────────────────────────────────────────
-export async function getClosedCandle(jwtToken, exchange, token, timeframe = 1) {
-    const data = await getLiveData(jwtToken, exchange, token);
-    if (!data) return null;
-
-    // The last completed candle's close time — as ISO UTC string
-    // MUST match historical API format: "2026-03-02T04:39:00+05:30"
-    const closedTime = getLastCompletedCandleTime(timeframe);
-    const closedTimeISO = closedTime.toISOString(); // e.g. "2026-03-02T04:39:00.000Z"
-
-    logger.info(`✅ Closed Candle [${timeframe}m]: ${closedTimeISO}`);
-    logger.info(`   LTP:${data.ltp} O:${data.open} H:${data.high} L:${data.low} Vol:${data.tradeVolume} OI:${data.opnInterest}`);
-
-    return {
-        time: closedTimeISO,          // ISO UTC — matches historical candle format
-        open: data.open,
-        high: data.high,
-        low: data.low,
-        close: data.ltp,              // LTP = close price at candle boundary
-        volume: data.tradeVolume,
-        oi: data.opnInterest ?? 0
-    };
-}

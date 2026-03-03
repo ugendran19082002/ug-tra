@@ -18,10 +18,22 @@ export async function getHistorical(jwt, exchange, token, interval, fromdate, to
             { headers: buildHeaders(jwt) }
         );
 
-        const candles = res.data.data ?? [];
+        if (res.data?.errorCode === "AG8001") {
+            throw new Error("INVALID_TOKEN");
+        }
+
+        const candles = res.data?.data;
+
+        if (!Array.isArray(candles)) {
+            logger.error(`❌ Historical data is not an array: ${JSON.stringify(res.data)}`);
+            return [];
+        }
+
         candles.sort((a, b) => {
             return new Date(a[0]).getTime() - new Date(b[0]).getTime();
-        }); logger.info(`📈 ${interval} candles: ${candles.length}`);
+        });
+
+        logger.info(`📈 ${interval} candles: ${candles.length}`);
 
         // if (checkLastCandleStaleness(candles, "index", logger, 5)) {
         //     return [];
@@ -164,47 +176,48 @@ export async function getFuture(token, fromdate, todate, interval = 2, retries =
 
         const candles = Array.from(map.values());
 
-        if (!candles.length) {
-            logger.warn("⚠ No candles returned");
+        // ─────────────────────────────
+        // 4️⃣ Sort and Filter by toDate (Crucial for Replay Parity)
+        // ─────────────────────────────
+        candles.sort((a, b) => Date.parse(a[0]) - Date.parse(b[0]));
+
+        const endBoundaryTs = todate ? new Date(todate).getTime() : Date.now();
+        const filteredCandles = candles.filter(c => new Date(c[0]).getTime() <= endBoundaryTs);
+
+        if (!filteredCandles.length) {
+            logger.warn(`⚠ No candles remaining after filtering by toDate: ${todate}`);
             return [];
         }
 
         // ─────────────────────────────
-        // 4️⃣ Sort Old → New
+        // 5️⃣ Log Last Candle Age (Relative to toDate if replay testing)
         // ─────────────────────────────
-        candles.sort((a, b) => Date.parse(a[0]) - Date.parse(b[0]));
+        const lastCandle = filteredCandles[filteredCandles.length - 1];
+        const lastTime = Date.parse(lastCandle[0]);
+        const diffMin = (endBoundaryTs - lastTime) / 60000;
 
-        // ─────────────────────────────
-        // 5️⃣ Log Last Candle Age (info only — no rejection)
-        // Real-time accuracy handled by getClosedCandle (SmartAPI)
-        // ─────────────────────────────
-        const lastTime = Date.parse(candles[candles.length - 1][0]);
-        const diffMin = (Date.now() - lastTime) / 60000;
+        console.log("🕒 Last Candle:", lastCandle[0]);
+        console.log("⏱ Delay (min):", diffMin.toFixed(2), todate ? "(relative to todate)" : "");
 
-        console.log("🕒 Last Candle:", candles[candles.length - 1][0]);
-        console.log("⏱ Delay (min):", diffMin.toFixed(2));
-
-        if (diffMin > 30) {
+        if (!todate && diffMin > 30) {
             logger.warn(`⚠ Future data is ${diffMin.toFixed(1)} min old — check Upstox connection`);
         }
 
         // ─────────────────────────────
         // 6️⃣ Print Latest Candle
         // ─────────────────────────────
-        const last = candles[candles.length - 1];
-
         console.log("📍 Latest Candle:");
-        console.log("Time   :", last[0]);
-        console.log("Open   :", last[1]);
-        console.log("High   :", last[2]);
-        console.log("Low    :", last[3]);
-        console.log("Close  :", last[4]);
-        console.log("Volume :", last[5]);
-        console.log("OI     :", last[6] ?? "N/A");
+        console.log("Time   :", lastCandle[0]);
+        console.log("Open   :", lastCandle[1]);
+        console.log("High   :", lastCandle[2]);
+        console.log("Low    :", lastCandle[3]);
+        console.log("Close  :", lastCandle[4]);
+        console.log("Volume :", lastCandle[5]);
+        console.log("OI     :", lastCandle[6] ?? "N/A");
 
-        logger.debug(`OI Sample:\n${JSON.stringify(candles.slice(0, 2), null, 2)}`);
+        logger.debug(`OI Sample:\n${JSON.stringify(filteredCandles.slice(0, 2), null, 2)}`);
 
-        return candles;
+        return filteredCandles;
 
     } catch (err) {
 

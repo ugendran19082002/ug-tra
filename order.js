@@ -299,14 +299,14 @@ export async function cleanupOrders(jwtToken, symbol) {
 }
 
 export async function executeOrder(jwt, signal) {
-    const { signal: type, optionToken, ceSymbol, peSymbol, optionLTP } = signal;
+    const { signal: type, optionToken, optionSymbol, optionLTP } = signal;
 
     if (!optionToken || optionLTP == null) {
         logger.warn("⚠ executeOrder: missing token or LTP — skipping order");
         return;
     }
 
-    const symbol = type === "CE" ? ceSymbol : peSymbol;
+    const symbol = optionSymbol;
 
     // ── First, clean up any old pending orders for this symbol
     await cleanupOrders(jwt, symbol);
@@ -321,15 +321,14 @@ export async function executeOrder(jwt, signal) {
         return;
     }
 
-    // ── Calculate Simplified Option SL & Target
-    // Long trade (both CE/PE): Target is above entry premium, SL is below entry premium.
-    const slPoints = parseFloat(signal.slPoints);
-    const tgtPoints = parseFloat(signal.tgtPoints);
+    // ── Calculate Option SL & Target (Prioritize pre-calculated model points)
+    const slPts = parseFloat(signal.optionSL ?? signal.slPoints);
+    const tgtPts = parseFloat(signal.optionTarget ?? signal.tgtPoints);
 
-    const optionSL = parseFloat(Math.max(0.1, optionLTP - slPoints).toFixed(1));
-    const optionTarget = parseFloat(Math.max(0.1, optionLTP + tgtPoints).toFixed(1));
+    const optionSL = parseFloat(Math.max(0.1, optionLTP - slPts).toFixed(1));
+    const optionTarget = parseFloat(Math.max(0.1, optionLTP + tgtPts).toFixed(1));
 
-    logger.info(`📐 Simplified Option Levels | LTP:${optionLTP} | SL:${optionSL} (pts:${slPoints}) | TGT:${optionTarget} (pts:${tgtPoints})`);
+    logger.info(`📐 Simplified Option Levels | LTP:${optionLTP} | SL:${optionSL} (pts:${slPts}) | TGT:${optionTarget} (pts:${tgtPts})`);
 
     const transactionType = "BUY";
 

@@ -1,134 +1,43 @@
 import { logger, tradeLogger, getISTTime } from "./logger.js";
-import { sleep, getDailyFromDate, buildTimeframe } from "./helpers.js";
+import { sleep, getDailyFromDate, calculateOptionLevels, buildTimeframe } from "./helpers.js";
 import { getHistorical, getFuture, format } from "./api/historical.js";
-import { getATMOptionTokens, getLTP, getClosedCandle, getLiveData } from "./getStrick.js";
+import { getATMOptionTokens, getLTP, } from "./getStrick.js";
 import { generateSignal } from "./signals.js";
 import { sendTelegram } from "./telegram.js";
-import { executeOrder, checkExitAndCleanup, getPositions } from "./order.js";
+import { executeOrder } from "./order.js";
 
 
-
-// ─────────────────────────────────────────
-// In-memory cache — survives across loop iterations
-// Used when AngelOne API intermittently returns 0 candles
-// ─────────────────────────────────────────
-let _cache = {
-    indexRaw1m: null,
-    indexRaw5m: null,
-    indexRaw15m: null,
-    raw1D: null,
-    futureRaw1m: null,
-};
-
-let activeTrade = null; // Stores { symbol, indexSL, indexTGT, isPE }
-
-function useOrCache(key, fresh) {
-    if (fresh.length) {
-        _cache[key] = fresh;       // update cache with fresh data
-        return fresh;
-    }
-    if (_cache[key]?.length) {
-        logger.warn(`⚠ ${key}: API returned 0 — using cached data (${_cache[key].length} candles)`);
-        return _cache[key];         // fallback to last known good
-    }
-    return [];                     // no cache either — truly empty
-}
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  ENTRY ENGINE (live)
 // ═════════════════════════════════════════════════════════════════════════════
 export async function entryEngine(jwt, fromdate, todate, futureToken) {
-    // ── Check if previous trade exited and cleanup pending legs
-    // Now also checks Index Levels
-    if (activeTrade) {
-        await checkExitAndCleanup(jwt, activeTrade.symbol, {
-            currentIndexLTP: _cache.indexRaw1m?.[_cache.indexRaw1m.length - 1]?.close, // Best guess for current LTP
-            indexSL: activeTrade.indexSL,
-            indexTGT: activeTrade.indexTGT,
-            isPE: activeTrade.isPE
-        });
 
-        // Final sanity check: if position is closed, clear the tracker
-        const pos = await getPositions(jwt);
-        const stillIn = pos.find(p => p.tradingsymbol === activeTrade.symbol && parseInt(p.netqty) !== 0);
-        if (!stillIn) {
-            logger.info(`✅ Trade tracking for ${activeTrade.symbol} cleared.`);
-            activeTrade = null;
-        }
-    }
-
-    // ── Fetch with retry-once on 0 candles (guards against first-loop cache miss)
-    async function fetchWithRetry(key, fn) {
-        let data = await fn();
-        if (!data.length && !_cache[key]?.length) {
-            // Cache empty too — retry once before giving up
-            logger.warn(`⚠ ${key}: 0 candles, no cache — retrying in 1s...`);
-            await sleep(1000);
-            data = await fn();
-        }
-        return data;
-    }
-
-    const rawIndex1m = await fetchWithRetry("indexRaw1m", () => getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_MINUTE", fromdate, todate));
+    const indexRaw1m = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_MINUTE", fromdate, todate);
     await sleep(300);
-    const rawIndex5m = await fetchWithRetry("indexRaw5m", () => getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "FIVE_MINUTE", fromdate, todate));
+    const indexRaw5m = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "FIVE_MINUTE", fromdate, todate);
     await sleep(300);
-    const rawIndex15m = await fetchWithRetry("indexRaw15m", () => getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "FIFTEEN_MINUTE", fromdate, todate));
+    const indexRaw15m = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "FIFTEEN_MINUTE", fromdate, todate);
     await sleep(300);
-    const rawDaily = await fetchWithRetry("raw1D", () => getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_DAY", getDailyFromDate(), todate));
+    const raw1D = await getHistorical(jwt, "BSE", process.env.SYMBOLTOKEN, "ONE_DAY", getDailyFromDate(), todate);
     await sleep(300);
-    const rawFuture1m = await fetchWithRetry("futureRaw1m", () => getFuture(futureToken, fromdate, todate));
+    const futureRaw1m = await getFuture(futureToken, fromdate, todate);
+    // const futureRaw1m = await getHistorical(jwt, "BFO", futureToken, "ONE_MINUTE", fromdate, todate);
 
     await sleep(300);
 
-    // Apply cache fallback for each timeframe
-    const indexRaw1m = useOrCache("indexRaw1m", rawIndex1m);
-    const indexRaw5m = useOrCache("indexRaw5m", rawIndex5m);
-    const indexRaw15m = useOrCache("indexRaw15m", rawIndex15m);
-    const raw1D = useOrCache("raw1D", rawDaily);
-    const futureRaw1m = useOrCache("futureRaw1m", rawFuture1m);
 
-
-    let index1m = format(indexRaw1m);
+    const index1m = format(indexRaw1m);
     let future1m = format(futureRaw1m);
+    const data1D = format(raw1D);
 
-
-    // ── Fetch live closed candle for INDEX (BSE) from SmartAPI FULL mode
-    await sleep(300);
-    const liveIndex = await getClosedCandle(jwt, "BSE", process.env.SYMBOLTOKEN, 1);
-
-    if (liveIndex) {
-        const lastIndex = index1m[index1m.length - 1];
-        if (lastIndex && Date.parse(lastIndex.time) === Date.parse(liveIndex.time)) {
-            index1m[index1m.length - 1] = liveIndex;
-            logger.info(`🔄 Index: Updated last candle with live data: C:${liveIndex.close}`);
-        } else {
-            index1m.push(liveIndex);
-            logger.info(`➕ Index: Appended live closed candle: ${liveIndex.time} | C:${liveIndex.close}`);
-        }
-    } else {
-        logger.warn("⚠ Live index candle fetch failed — using historical data only");
-    }
-
-    // ── Fetch live closed candle for FUTURE (BFO) from SmartAPI FULL mode
+    // ── Fetch live closed candle from SmartAPI FULL mode
     // This gives real-time OI and is guaranteed to be a COMPLETED candle
     await sleep(300);
-    const liveCandle = await getClosedCandle(jwt, "BFO", futureToken, 1);
 
-    if (liveCandle) {
-        const lastFuture = future1m[future1m.length - 1];
-        if (lastFuture && Date.parse(lastFuture.time) === Date.parse(liveCandle.time)) {
-            future1m[future1m.length - 1] = liveCandle; // update with live OI
-            logger.info(`🔄 Future: Updated last candle with live OI: ${liveCandle.oi}`);
-        } else {
-            future1m.push(liveCandle); // append new closed candle
-            logger.info(`➕ Future: Appended live closed candle: ${liveCandle.time} | OI: ${liveCandle.oi}`);
-        }
-    } else {
-        logger.warn("⚠ Live future candle fetch failed — using historical data only");
-    }
 
-    if (!index1m.length || !future1m.length) {
+
+    if (!indexRaw1m.length || !futureRaw1m.length) {
         logger.warn("⚠ Missing data — skipping");
         return { signal: "NO_TRADE", reason: "missing data" };
     }
@@ -136,19 +45,12 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
     const latest = future1m[future1m.length - 1];
     logger.info(`📍 Signal Candle → Time:${latest.time} O:${latest.open} H:${latest.high} L:${latest.low} C:${latest.close} Vol:${latest.volume} OI:${latest.oi}`);
 
-    // ── Fall back to building 5m / 15m / 1D from 1m when API returns empty
-    // 1 trading day = 375 one-minute candles (09:15 → 15:30)
-    const index5m = (indexRaw5m?.length) ? format(indexRaw5m) : buildTimeframe(index1m, 5);
-    const index15m = (indexRaw15m?.length) ? format(indexRaw15m) : buildTimeframe(index1m, 15);
-    const data1D = (raw1D?.length) ? format(raw1D) : buildTimeframe(index1m, 375);
+    // ── Fall back to building 5m / 15m from 1m when API returns empty
+    const index5m = (indexRaw5m && indexRaw5m.length) ? format(indexRaw5m) : buildTimeframe(index1m, 5);
+    const index15m = (indexRaw15m && indexRaw15m.length) ? format(indexRaw15m) : buildTimeframe(index1m, 15);
 
-    if (!index5m.length) logger.warn("⚠ 5m  empty even after buildTimeframe fallback");
-    if (!index15m.length) logger.warn("⚠ 15m empty even after buildTimeframe fallback");
-    if (!data1D.length) logger.warn("⚠ 1D  empty even after buildTimeframe fallback");
-
-    if (!indexRaw5m?.length) logger.info("📐 5m  built from 1m candles");
-    if (!indexRaw15m?.length) logger.info("📐 15m built from 1m candles");
-    if (!raw1D?.length) logger.info("📐 1D  built from 1m candles");
+    if (!index5m.length) logger.warn("⚠ 5m data empty even after buildTimeframe fallback");
+    if (!index15m.length) logger.warn("⚠ 15m data empty even after buildTimeframe fallback");
 
     logger.info(`Timeframes → 1m:${index1m.length} 5m:${index5m.length} 15m:${index15m.length} 1D:${data1D.length}`);
 
@@ -182,13 +84,8 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
 
     // ── Price levels
     const isPE = r.signal === "PE";
-    const entryPrice = parseFloat(r.indexLTP) || index1m[index1m.length - 1].close;
-
-    if (isNaN(entryPrice)) {
-        logger.error("❌ Entry Price is NaN - Aborting Trade");
-        return { signal: "NO_TRADE", reason: "NaN Entry Price" };
-    }
-
+    const lastCandle = index1m[index1m.length - 1];
+    const entryPrice = parseFloat(lastCandle.close.toFixed(2));
     const slPrice = isPE
         ? parseFloat((entryPrice + r.dynamicSL).toFixed(2))
         : parseFloat((entryPrice - r.dynamicSL).toFixed(2));
@@ -200,11 +97,12 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
     logger.info(`🎯 Entry:${entryPrice} | SL:${slPrice} | TGT:${tgtPrice} | RR:${riskReward}`);
 
     // ── ATM Option Token fetch
-    let atm = null;
     let optionToken = null, optionSymbol = null, optionLTP = null, atmStrike = null, optionExpiry = null;
     let optionSL = null, optionTarget = null;
+
     try {
-        atm = await getATMOptionTokens("SENSEX", entryPrice);
+        const signalDate = new Date(lastCandle.time);
+        const atm = await getATMOptionTokens("SENSEX", entryPrice, signalDate);
 
         if (atm) {
             atmStrike = atm.strike;
@@ -221,10 +119,18 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
 
             if (ltpData.length) {
                 optionLTP = parseFloat(ltpData[0].ltp.toFixed(2));
-                optionSL = parseFloat(Math.max(0.1, optionLTP - r.dynamicSL).toFixed(1));
-                optionTarget = parseFloat(Math.max(0.1, optionLTP + r.dynamicTGT).toFixed(1));
+                logger.info(`💰 Option LTP  : ${optionLTP}`);
 
-                logger.info(`💰 Option LTP  : ${optionLTP} | SL: ${optionSL} | TGT: ${optionTarget}`);
+                // ── Option-level SL & Target via delta/gamma model
+                const levels = calculateOptionLevels({
+                    indexEntry: entryPrice,
+                    indexSL: slPrice,
+                    indexTarget: tgtPrice,
+                    optionLTP,
+                });
+                optionSL = parseFloat(levels.optionSL.toFixed(2));
+                optionTarget = parseFloat(levels.optionTarget.toFixed(2));
+                logger.info(`📐 Option SL   : ${optionSL}  | Option TGT: ${optionTarget}`);
             } else {
                 logger.warn("⚠ Option LTP fetch returned empty");
             }
@@ -259,6 +165,8 @@ Entry       : ${entryPrice}
 Stop Loss   : ${slPrice}  (${r.dynamicSL} pts ⬆)
 Target      : ${tgtPrice}  (${r.dynamicTGT} pts ⬇)
 Risk:Reward : 1 : ${riskReward}
+Option SL   : ${optionSL ?? "N/A"}
+Option TGT  : ${optionTarget ?? "N/A"}
 ${optionLine}
 ━━━━━━━━━━━━━━━━━━
 📌 Conditions
@@ -292,6 +200,8 @@ Entry       : ${entryPrice}
 Stop Loss   : ${slPrice}  (${r.dynamicSL} pts ⬇)
 Target      : ${tgtPrice}  (${r.dynamicTGT} pts ⬆)
 Risk:Reward : 1 : ${riskReward}
+Option SL   : ${optionSL ?? "N/A"}
+Option TGT  : ${optionTarget ?? "N/A"}
 ${optionLine}
 ━━━━━━━━━━━━━━━━━━
 📌 Conditions
@@ -328,8 +238,6 @@ Volume OK   : ${r.volConfirm}
         trendStrong: r.trendStrong,
         optionToken,
         optionSymbol,
-        ceSymbol: atm?.ceSymbol,
-        peSymbol: atm?.peSymbol,
         optionLTP,
         optionSL,
         optionTarget,
@@ -341,15 +249,7 @@ Volume OK   : ${r.volConfirm}
     await sendTelegram(msg);
 
     // ── Place / replace bracket order
-    const res = await executeOrder(jwt, signalObj);
-    if (res?.orderNo) {
-        activeTrade = {
-            symbol: signalObj.optionSymbol,
-            indexSL: signalObj.slPrice,
-            indexTGT: signalObj.tgtPrice,
-            isPE: signalObj.signal === "PE"
-        };
-    }
+    await executeOrder(jwt, signalObj);
 
     return signalObj;
 }

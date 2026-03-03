@@ -120,7 +120,7 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     logger.level = "error";
 
     // ── Main simulation loop
-    for (let i = startBar; i <= endBar; i++) {
+    for (let i = startBar; i < endBar; i++) {
 
         const index1m = alignedIndex.slice(0, i + 1);
         const future1m = alignedFuture.slice(0, i + 1);
@@ -146,7 +146,7 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
             }
 
             const ist = new Date(new Date(currentTime).toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-            if (ist.getHours() * 60 + ist.getMinutes() >= (15 * 60 + 29) && !exitReason) {
+            if ((ist.getHours() === 15 && ist.getMinutes() >= 29) && !exitReason) {
                 exitReason = "EOD";
                 exitPrice = currentClose;
             }
@@ -192,6 +192,9 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
         if (!openTrade) {
             const result = generateSignal(index1m, index5m, index15m, future1m, dailySlice);
 
+            // ── Standardized Comparison Log (For Live vs Backtest Parity Check)
+            // btLogger.info(`🔍 PARITY_DEBUG | Time:${currentTime} | Close:${index1m[index1m.length - 1].close} | EMA:${result.currentEMA} | RSI:${result.currentRSI} | ADX:${result.currentADX} | Sig:${result.signal}`);
+
             if (i % 200 === 0 && result.signal !== "NO_TRADE") {
                 btLogger.info(
                     `  [bar ${i}] ${result.dailyBias} | ADX:${result.currentADX} RSI:${result.currentRSI}`
@@ -199,29 +202,31 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
             }
 
             if (result.signal === "CE" || result.signal === "PE") {
-                const entryPrice = parseFloat(currentClose.toFixed(2));
+
+                const nextCandle = alignedIndex[i + 1];
+                if (!nextCandle) continue;
+
+                const entryPrice = parseFloat(nextCandle.open.toFixed(2));
+
                 const sl = result.dynamicSL ?? slPoints;
                 const tgt = result.dynamicTGT ?? tgtPoints;
-                const slPrice = parseFloat((result.signal === "CE" ? entryPrice - sl : entryPrice + sl).toFixed(2));
-                const tgtPrice = parseFloat((result.signal === "CE" ? entryPrice + tgt : entryPrice - tgt).toFixed(2));
+
+                const slPrice = result.signal === "CE"
+                    ? entryPrice - sl
+                    : entryPrice + sl;
+
+                const tgtPrice = result.signal === "CE"
+                    ? entryPrice + tgt
+                    : entryPrice - tgt;
 
                 openTrade = {
                     type: result.signal,
-                    entryPrice,
-                    entryTime: currentTime,
-                    entryBar: i,
-                    sl: slPrice,
-                    tgt: tgtPrice,
+                    entryPrice: parseFloat(entryPrice.toFixed(2)),
+                    entryTime: nextCandle.time,
+                    entryBar: i + 1,
+                    sl: parseFloat(slPrice.toFixed(2)),
+                    tgt: parseFloat(tgtPrice.toFixed(2)),
                 };
-
-                btLogger.info(
-                    `  ENTRY [${result.signal}] | bar[${i}] | Close: ${entryPrice.toFixed(2)} | ` +
-                    `SL: ${slPrice.toFixed(2)} (${sl.toFixed(2)}pts) | Tgt: ${tgtPrice.toFixed(2)} (${tgt.toFixed(2)}pts) | ` +
-                    `ADX: ${result.currentADX} | RSI: ${result.currentRSI} | ATR: ${result.currentATR} | ` +
-                    `Struct: Bull:${result.bullishStructure} Bear:${result.bearishStructure} | ` +
-                    `Gap: ${result.gapPoints}pts | ` +
-                    `IST: ${getISTTime(new Date(currentTime))}`
-                );
             }
         }
     }

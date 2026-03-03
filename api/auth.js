@@ -27,14 +27,25 @@ function loadCachedToken() {
     }
 }
 
+export function clearTokenCache() {
+    if (fs.existsSync(TOKEN_FILE)) {
+        fs.unlinkSync(TOKEN_FILE);
+        logger.info("🗑 Cached JWT cleared");
+    }
+}
+
 function saveToken(jwt) {
     fs.writeFileSync(TOKEN_FILE, JSON.stringify({ jwt, savedAt: Date.now() }), "utf-8");
 }
 
-export async function login() {
+export async function login(force = false) {
     // Return cached token if still valid
-    const cached = loadCachedToken();
-    if (cached) return cached;
+    if (!force) {
+        const cached = loadCachedToken();
+        if (cached) return cached;
+    } else {
+        logger.warn("🔄 Forced login requested...");
+    }
 
     try {
         logger.info("🔐 Logging in...");

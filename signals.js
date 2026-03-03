@@ -385,6 +385,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         currentADX: currentADX?.toFixed(1),
         currentRSI: currentRSI?.toFixed(1),
         currentATR: currentATR?.toFixed(2),
+        currentEMA: ema5m[ema5m.length - 1]?.toFixed(2),
         trendStrong,
         rsiBullish,
         rsiBearish,
