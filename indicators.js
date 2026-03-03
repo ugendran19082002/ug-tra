@@ -151,108 +151,184 @@ export function calculateADX(data, period = 14, warnings = []) {
 // ─────────────────────────────────────────
 // SWING S/R — unchanged
 // ─────────────────────────────────────────
-export function findSupportResistance(data, window = 8) {
-    const supports = [], resistances = [];
+// export function findSupportResistance(data, window = 8) {
+//     const supports = [], resistances = [];
+//     for (let i = window; i < data.length - window; i++) {
+//         let isSupport = true, isResistance = true;
+//         for (let j = i - window; j <= i + window; j++) {
+//             if (data[j].low < data[i].low) isSupport = false;
+//             if (data[j].high > data[i].high) isResistance = false;
+//         }
+//         if (isSupport) supports.push(data[i].low);
+//         if (isResistance) resistances.push(data[i].high);
+//     }
+//     return { supports, resistances };
+// }
+
+
+// ─────────────────────────────────────────────
+// PROFESSIONAL STRUCTURE + MAJOR S/R DETECTOR
+// ─────────────────────────────────────────────
+
+// ─────────────────────────────────────────────
+// ADVANCED SUPPORT / RESISTANCE ENGINE
+// Includes:
+//   1. Swing-based Major S/R
+//   2. Classic Pivot Levels (S1,S2,S3 / R1,R2,R3)
+//   3. Safe fallback handling
+// ─────────────────────────────────────────────
+
+export function findSupportResistance(
+    data,
+    prevCandle = null,
+    options = {}
+) {
+    const {
+        window = 8,          // pivot strength
+        tolerance = 0.002,   // clustering tolerance (0.2%)
+        minTouches = 2       // major level threshold
+    } = options;
+
+    // SAFETY CHECK
+    if (!Array.isArray(data) || data.length < window * 2) {
+        return {
+            supports: [],
+            resistances: [],
+            pivotLevels: null
+        };
+    }
+
+    const pivots = [];
+
+    // ─────────────────────────────────────────
+    // 1️⃣ FIND SWING PIVOTS
+    // ─────────────────────────────────────────
     for (let i = window; i < data.length - window; i++) {
-        let isSupport = true, isResistance = true;
+        let isSupport = true;
+        let isResistance = true;
+
         for (let j = i - window; j <= i + window; j++) {
             if (data[j].low < data[i].low) isSupport = false;
             if (data[j].high > data[i].high) isResistance = false;
         }
-        if (isSupport) supports.push(data[i].low);
-        if (isResistance) resistances.push(data[i].high);
-    }
-    return { supports, resistances };
-}
 
+        if (isSupport) {
+            pivots.push({ type: "low", price: data[i].low });
+        }
+
+        if (isResistance) {
+            pivots.push({ type: "high", price: data[i].high });
+        }
+    }
+
+    const rawSupports = pivots
+        .filter(p => p.type === "low")
+        .map(p => p.price);
+
+    const rawResistances = pivots
+        .filter(p => p.type === "high")
+        .map(p => p.price);
+
+    // ─────────────────────────────────────────
+    // 2️⃣ CLUSTER LEVELS (REMOVE NOISE)
+    // ─────────────────────────────────────────
+    function clusterLevels(levels) {
+        const clusters = [];
+
+        levels.forEach(level => {
+            let found = false;
+
+            for (let cluster of clusters) {
+                if (
+                    Math.abs(cluster.price - level) / cluster.price <= tolerance
+                ) {
+                    cluster.touches++;
+                    cluster.price =
+                        (cluster.price * (cluster.touches - 1) + level) /
+                        cluster.touches;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                clusters.push({
+                    price: level,
+                    touches: 1
+                });
+            }
+        });
+
+        return clusters
+            .filter(l => l.touches >= minTouches)
+            .sort((a, b) => b.touches - a.touches)
+            .map(l => Number(l.price.toFixed(2)));
+    }
+
+    const swingSupports = clusterLevels(rawSupports);
+    const swingResistances = clusterLevels(rawResistances);
+
+    // ─────────────────────────────────────────
+    // 3️⃣ CLASSIC PIVOT LEVELS (OPTIONAL)
+    // ─────────────────────────────────────────
+    let pivotLevels = null;
+
+    if (
+        prevCandle &&
+        typeof prevCandle.high === "number" &&
+        typeof prevCandle.low === "number" &&
+        typeof prevCandle.close === "number"
+    ) {
+        const { high, low, close } = prevCandle;
+
+        const P = (high + low + close) / 3;
+
+        const R1 = (2 * P) - low;
+        const S1 = (2 * P) - high;
+
+        const R2 = P + (high - low);
+        const S2 = P - (high - low);
+
+        const R3 = high + 2 * (P - low);
+        const S3 = low - 2 * (high - P);
+
+        pivotLevels = {
+            pivot: Number(P.toFixed(2)),
+            supports: [
+                Number(S1.toFixed(2)),
+                Number(S2.toFixed(2)),
+                Number(S3.toFixed(2))
+            ],
+            resistances: [
+                Number(R1.toFixed(2)),
+                Number(R2.toFixed(2)),
+                Number(R3.toFixed(2))
+            ]
+        };
+    }
+
+    // ─────────────────────────────────────────
+    // 4️⃣ MERGE SWING + PIVOT LEVELS
+    // ─────────────────────────────────────────
+    const supports = pivotLevels
+        ? [...swingSupports, ...pivotLevels.supports]
+        : swingSupports;
+
+    const resistances = pivotLevels
+        ? [...swingResistances, ...pivotLevels.resistances]
+        : swingResistances;
+
+    return {
+        supports,
+        resistances,
+    };
+}
 // ─────────────────────────────────────────
 // STRONG SWING PIVOTS
 // Only keeps pivots where the post-pivot reaction > ATR * 1.2
 // Eliminates weak pivots that didn't cause real moves
 // ─────────────────────────────────────────
-export function findStrongPivots(data, window = 8, atr = 0) {
 
-    const supports = [];
-    const resistances = [];
-
-    if (!data || data.length < window * 2 + 5) {
-        return { supports, resistances };
-    }
-
-    const minReaction = atr * 1.2;
-
-    for (let i = window; i < data.length - window - 5; i++) {
-
-        let isSupport = true;
-        let isResistance = true;
-
-        // ── Swing Detection ──
-        for (let j = i - window; j <= i + window; j++) {
-            if (data[j].low < data[i].low) isSupport = false;
-            if (data[j].high > data[i].high) isResistance = false;
-        }
-
-        // ── Volume at pivot ──
-        const pivotVolume = data[i].volume ?? 0;
-        const avgVol = (
-            data.slice(i - 5, i)
-                .reduce((sum, c) => sum + (c.volume ?? 0), 0) / 5
-        );
-
-        const volumeSpikeAtPivot = pivotVolume > avgVol * 1.2;
-
-        // ────────────────────────────────
-        // SUPPORT LOGIC
-        // ────────────────────────────────
-        if (isSupport) {
-
-            // Reaction measured only using NEXT 5 candles
-            const postData = data.slice(i + 1, i + 6);
-            const postHigh = Math.max(...postData.map(c => c.high ?? 0));
-
-            const reaction = postHigh - data[i].low;
-
-            if (reaction > minReaction) {
-
-                let score = 1;
-
-                if (volumeSpikeAtPivot) score += 1;
-                if (reaction > atr * 1.8) score += 1;
-
-                supports.push({
-                    price: data[i].low,
-                    strength: score
-                });
-            }
-        }
-
-        // ────────────────────────────────
-        // RESISTANCE LOGIC
-        // ────────────────────────────────
-        if (isResistance) {
-
-            const postData = data.slice(i + 1, i + 6);
-            const postLow = Math.min(...postData.map(c => c.low ?? Infinity));
-
-            const reaction = data[i].high - postLow;
-
-            if (reaction > minReaction) {
-
-                let score = 1;
-
-                if (volumeSpikeAtPivot) score += 1;
-                if (reaction > atr * 1.8) score += 1;
-
-                resistances.push({
-                    price: data[i].high,
-                    strength: score
-                });
-            }
-        }
-    }
-
-    return { supports, resistances };
-}
 
 // ─────────────────────────────────────────
 // S/R LEVEL STRENGTH SCORING
@@ -290,51 +366,22 @@ export function cleanLevels(levels, threshold = 20) {
     }, []);
 }
 
-export function clusterLevels(levels, atr) {
-    if (!levels.length) return [];
-
-    const sorted = levels.sort((a, b) => a.price - b.price);
-    const clustered = [];
-
-    const threshold = atr * 0.6; // merge if within 0.6 ATR
-
-    let currentCluster = [sorted[0]];
-
-    for (let i = 1; i < sorted.length; i++) {
-        const prev = currentCluster[currentCluster.length - 1];
-        const curr = sorted[i];
-
-        if (Math.abs(curr.price - prev.price) <= threshold) {
-            currentCluster.push(curr);
-        } else {
-            // push strongest in cluster
-            clustered.push(
-                currentCluster.reduce((a, b) =>
-                    b.strength > a.strength ? b : a
-                )
-            );
-            currentCluster = [curr];
-        }
-    }
-
-    // push last cluster
-    clustered.push(
-        currentCluster.reduce((a, b) =>
-            b.strength > a.strength ? b : a
-        )
-    );
-
-    return clustered;
-}
-
 // ─────────────────────────────────────────
 // VOLUME SPIKE
 // FIX #2 — Threshold 1.1× → 1.5× for genuine spike detection
 // ─────────────────────────────────────────
+// export function volumeSpike(data, index) {
+//     if (index < 10) return false;
+//     const avg = data.slice(index - 10, index).reduce((s, c) => s + c.volume, 0) / 10;
+//     return data[index].volume > avg * 1.5; // ✅ 150% — real spike, not noise
+// }
+
 export function volumeSpike(data, index) {
-    if (index < 10) return false;
-    const avg = data.slice(index - 10, index).reduce((s, c) => s + c.volume, 0) / 10;
-    return data[index].volume > avg * 1.5; // ✅ 150% — real spike, not noise
+    const lookback = Math.min(10, index);  // use whatever is available
+    if (lookback < 3) return false;        // need at least 3 candles to be meaningful
+    const avg = data.slice(index - lookback, index)
+        .reduce((s, c) => s + c.volume, 0) / lookback;
+    return data[index].volume > avg * 1.5;
 }
 
 // ─────────────────────────────────────────
