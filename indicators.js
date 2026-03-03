@@ -166,6 +166,111 @@ export function findSupportResistance(data, window = 8) {
 }
 
 // ─────────────────────────────────────────
+// STRONG SWING PIVOTS
+// Only keeps pivots where the post-pivot reaction > ATR * 1.2
+// Eliminates weak pivots that didn't cause real moves
+// ─────────────────────────────────────────
+export function findStrongPivots(data, window = 8, atr = 0) {
+
+    const supports = [];
+    const resistances = [];
+
+    if (!data || data.length < window * 2 + 5) {
+        return { supports, resistances };
+    }
+
+    const minReaction = atr * 1.2;
+
+    for (let i = window; i < data.length - window - 5; i++) {
+
+        let isSupport = true;
+        let isResistance = true;
+
+        // ── Swing Detection ──
+        for (let j = i - window; j <= i + window; j++) {
+            if (data[j].low < data[i].low) isSupport = false;
+            if (data[j].high > data[i].high) isResistance = false;
+        }
+
+        // ── Volume at pivot ──
+        const pivotVolume = data[i].volume ?? 0;
+        const avgVol = (
+            data.slice(i - 5, i)
+                .reduce((sum, c) => sum + (c.volume ?? 0), 0) / 5
+        );
+
+        const volumeSpikeAtPivot = pivotVolume > avgVol * 1.2;
+
+        // ────────────────────────────────
+        // SUPPORT LOGIC
+        // ────────────────────────────────
+        if (isSupport) {
+
+            // Reaction measured only using NEXT 5 candles
+            const postData = data.slice(i + 1, i + 6);
+            const postHigh = Math.max(...postData.map(c => c.high ?? 0));
+
+            const reaction = postHigh - data[i].low;
+
+            if (reaction > minReaction) {
+
+                let score = 1;
+
+                if (volumeSpikeAtPivot) score += 1;
+                if (reaction > atr * 1.8) score += 1;
+
+                supports.push({
+                    price: data[i].low,
+                    strength: score
+                });
+            }
+        }
+
+        // ────────────────────────────────
+        // RESISTANCE LOGIC
+        // ────────────────────────────────
+        if (isResistance) {
+
+            const postData = data.slice(i + 1, i + 6);
+            const postLow = Math.min(...postData.map(c => c.low ?? Infinity));
+
+            const reaction = data[i].high - postLow;
+
+            if (reaction > minReaction) {
+
+                let score = 1;
+
+                if (volumeSpikeAtPivot) score += 1;
+                if (reaction > atr * 1.8) score += 1;
+
+                resistances.push({
+                    price: data[i].high,
+                    strength: score
+                });
+            }
+        }
+    }
+
+    return { supports, resistances };
+}
+
+// ─────────────────────────────────────────
+// S/R LEVEL STRENGTH SCORING
+// Keeps only levels that appear clustered >= minTouches times
+// Higher touch count = stronger institutional zone
+// ─────────────────────────────────────────
+export function getLevelStrength(levels, threshold = 30, minTouches = 2) {
+    return levels
+        .map(level => {
+            const touches = levels.filter(l => Math.abs(l - level) < threshold).length;
+            return { level, strength: touches };
+        })
+        .filter(l => l.strength >= minTouches)
+        .map(l => l.level);
+}
+
+
+// ─────────────────────────────────────────
 // ROUND LEVELS — unchanged
 // ─────────────────────────────────────────
 export function getRoundLevels(price, step = 500) {
@@ -183,6 +288,43 @@ export function cleanLevels(levels, threshold = 20) {
             acc.push(lvl);
         return acc;
     }, []);
+}
+
+export function clusterLevels(levels, atr) {
+    if (!levels.length) return [];
+
+    const sorted = levels.sort((a, b) => a.price - b.price);
+    const clustered = [];
+
+    const threshold = atr * 0.6; // merge if within 0.6 ATR
+
+    let currentCluster = [sorted[0]];
+
+    for (let i = 1; i < sorted.length; i++) {
+        const prev = currentCluster[currentCluster.length - 1];
+        const curr = sorted[i];
+
+        if (Math.abs(curr.price - prev.price) <= threshold) {
+            currentCluster.push(curr);
+        } else {
+            // push strongest in cluster
+            clustered.push(
+                currentCluster.reduce((a, b) =>
+                    b.strength > a.strength ? b : a
+                )
+            );
+            currentCluster = [curr];
+        }
+    }
+
+    // push last cluster
+    clustered.push(
+        currentCluster.reduce((a, b) =>
+            b.strength > a.strength ? b : a
+        )
+    );
+
+    return clustered;
 }
 
 // ─────────────────────────────────────────

@@ -283,6 +283,8 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     btLogger.info("═══════════════════════════════════════════════════════");
     btLogger.info("  BACKTEST SUMMARY");
     btLogger.info("═══════════════════════════════════════════════════════");
+    btLogger.info(`  From          : ${btFrom}`);
+    btLogger.info(`  To            : ${btTo}`);
     btLogger.info(`  Total Trades  : ${trades.length}`);
     btLogger.info(`  Winners       : ${winners.length}`);
     btLogger.info(`  Losers        : ${losers.length}`);
