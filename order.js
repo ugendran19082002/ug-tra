@@ -285,8 +285,11 @@ export async function cleanupOrders(jwtToken, symbol) {
         logger.info(`🧹 Cleaning up ${pendingOrders.length} pending orders for ${symbol}`);
         for (const o of pendingOrders) {
 
-            let variety = o.variety || "NORMAL";
-            if (!o.variety && String(o.ordertype).toUpperCase().includes("STOPLOSS")) {
+            let variety = String(o.variety || "NORMAL").toUpperCase();
+            if (variety.includes("AMO")) {
+                variety = "NORMAL";
+            }
+            if (String(o.ordertype).toUpperCase().includes("STOPLOSS")) {
                 variety = "STOPLOSS";
             }
 
