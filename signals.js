@@ -249,7 +249,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     // ─────────────────────────────────────────
     // 1M BREAK STRUCTURE
     // ─────────────────────────────────────────
-    const last5 = index1m.slice(-6, -1);
+    const last5 = index1m.slice(-2, -1);
     const max5High = Math.max(...last5.map(c => c.high));
     const min5Low = Math.min(...last5.map(c => c.low));
 
@@ -395,6 +395,9 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
 
 
     if (bearishTrendSetup) {
+
+        console.log("BEARISH", diag.breakDown);
+
         return {
             signal: "PE",
             reason: "trend_continuation_down",
@@ -405,6 +408,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     }
 
     if (bullishTrendSetup) {
+        console.log("BULLISH", diag.breakUp);
         return {
             signal: "CE",
             reason: "trend_continuation_up",
