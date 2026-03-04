@@ -22,10 +22,10 @@ async function main() {
         // const btTo = process.env.BT_TO ?? "2026-02-27 15:30";
 
         // const btFrom = getTodayFromDate(20);
-        const btFrom = "2026-02-03 09:15";
+        const btFrom = "2025-12-31 09:15";
         console.log("btFrom", btFrom);
         // const btTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
-        const btTo = "2026-03-02 15:30"; // ✅ FIX: replace with formatDateTime() for real live use
+        const btTo = "2026-01-31 15:30"; // ✅ FIX: replace with formatDateTime() for real live use
         // const btTo = "2026-03-02 11:10"; // ✅ FIX: replace with formatDateTime() for real live use
         console.log("btTo", btTo);
         logger.info(`📅 Window: ${btFrom} → ${btTo}`);
@@ -61,8 +61,8 @@ async function main() {
 
             const liveFrom = getTodayFromDate(20);
             console.log("liveFrom", liveFrom);
-            const liveTo = "2026-03-02 09:45"; // ✅ FIX: replace with formatDateTime() for real live use
-            // const liveTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
+            // const liveTo = "2026-03-02 13:59"; // ✅ FIX: replace with formatDateTime() for real live use
+            const liveTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
             console.log("liveTo", liveTo);
             const futureToken = await getFutureToken("SENSEX");
 

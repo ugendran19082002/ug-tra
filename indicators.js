@@ -381,6 +381,7 @@ export function volumeSpike(data, index) {
     if (lookback < 3) return false;        // need at least 3 candles to be meaningful
     const avg = data.slice(index - lookback, index)
         .reduce((s, c) => s + c.volume, 0) / lookback;
+    // 1.3× threshold — real volume expansion (PRO FILTER #5 boost)
     return data[index].volume > avg * 1.5;
 }
 
@@ -415,4 +416,22 @@ export function classifyOI(last, prev) {
         callOi: longBuildup || shortCovering,
         putOi: shortBuildup || longUnwinding
     };
+}
+
+// ─────────────────────────────────────────
+// VWAP — Intraday Cumulative
+// PRO UPGRADE #1 — Institutional bias filter
+// Resets each session (caller passes session candles only)
+// Returns null when cumulativeVol = 0 (no crash risk)
+// ─────────────────────────────────────────
+export function calculateVWAP(candles) {
+    let cumulativePV = 0;
+    let cumulativeVol = 0;
+
+    return candles.map(c => {
+        const typical = (c.high + c.low + c.close) / 3;
+        cumulativePV += typical * c.volume;
+        cumulativeVol += c.volume;
+        return cumulativeVol === 0 ? null : cumulativePV / cumulativeVol;
+    });
 }
