@@ -21,11 +21,11 @@ async function main() {
         // const btFrom = process.env.BT_FROM ?? "2026-02-15 09:15";
         // const btTo = process.env.BT_TO ?? "2026-02-27 15:30";
 
-        // const btFrom = getTodayFromDate(20);
-        const btFrom = "2025-12-31 09:15";
+        const btFrom = getTodayFromDate(29);
+        // const btFrom = "2025-12-31 09:15";
         console.log("btFrom", btFrom);
-        // const btTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
-        const btTo = "2026-01-31 15:30"; // ✅ FIX: replace with formatDateTime() for real live use
+        const btTo = formatCurrentDateTime(); // ✅ FIX: replace with formatDateTime() for real live use
+        // const btTo = "2026-01-31 15:30"; // ✅ FIX: replace with formatDateTime() for real live use
         // const btTo = "2026-03-02 11:10"; // ✅ FIX: replace with formatDateTime() for real live use
         console.log("btTo", btTo);
         logger.info(`📅 Window: ${btFrom} → ${btTo}`);
