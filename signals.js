@@ -123,8 +123,8 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     const istDate = new Date(istStr);
     const minuteOfDay = istDate.getHours() * 60 + istDate.getMinutes();
     // 9:20 = 560 mins | 14:45 = 885 mins
-    const TIME_START = 560; // 9:20 IST
-    const TIME_END = 885; // 14:45 IST
+    const TIME_START = 558; // 9:18 IST
+    const TIME_END = 900; // 15:00 IST
 
     // ─────────────────────────────────────────
     // INITIAL DIAGNOSTIC
