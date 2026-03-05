@@ -148,7 +148,7 @@ export function getTodayFromDate(daysBack = 30) {
 export function getDailyFromDate() {
     const p = n => String(n).padStart(2, "0");
     const d = new Date();
-    d.setDate(d.getDate() - 30);
+    d.setDate(d.getDate() - 45);  // 45 days ensures 20+ trading days for EMA even with holidays
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} 09:15`;
 }
 

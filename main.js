@@ -119,9 +119,10 @@ async function main() {
             const jwt = await login(forceLogin);
             forceLogin = false;
 
-            const liveFrom = getTodayFromDate(20);
+            const liveFrom = getTodayFromDate(29);
             // const liveTo = formatCurrentDateTime();
-            const liveTo = process.env.LIVE_TO_DATE || formatCurrentDateTime();
+            // const liveTo = process.env.LIVE_TO_DATE || formatCurrentDateTime();
+            const liveTo = "2026-03-02 10:11";
             const futureToken = await getFutureToken(process.env.INDEX_SYMBOL || "SENSEX");
 
             logger.info(`📅 Window: ${liveFrom} → ${liveTo}`);

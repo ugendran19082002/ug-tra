@@ -386,7 +386,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         (diag.dailyBias === "BEARISH" && diag.trendDown && diag.bearishStructure);
 
     if (!diag.trendAligned) {
-        return { signal: "NO_TRADE", reason: "multi_tf_misaligned", ...diag };
+        return { signal: "NO_TRADE", reason: "multi_tf_misaligned " + diag.dailyBias + " " + diag.trendUp + " " + diag.bullishStructure + " " + diag.trendDown + " " + diag.bearishStructure, ...diag };
     }
 
     // ── PRO FILTER #5 — BREAKOUT STRENGTH ───
