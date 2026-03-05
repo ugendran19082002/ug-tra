@@ -137,8 +137,9 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     }
 
     // ─────────────────────────────────────────
-    // PRO FILTER #1 — TIME FILTER (IST 9:20–14:45)
-    // Avoid opening chaos + closing traps
+    // PRO FILTER #1 — TIME FILTER (IST 9:18–15:00)
+    // Avoid pre-open noise + end-of-day closing traps
+    // Configurable via CFG.TIME_START_MIN (558) and CFG.TIME_END_MIN (900)
     // ─────────────────────────────────────────
     const istStr = new Date(last1m.time).toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
     const istDate = new Date(istStr);
@@ -274,7 +275,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
 
     diag.dynamicSL = parseFloat(Math.min(CFG.ATR_SL_CAP, currentATR * CFG.ATR_SL_MULTIPLIER).toFixed(2));
     diag.dynamicTGT = parseFloat(Math.min(CFG.ATR_TGT_CAP, currentATR * CFG.ATR_TGT_MULTIPLIER).toFixed(2));
-
+ 
     const adxArr = calculateADX(index5m, 14, diag.warnings);
     const rawADX = adxArr[adxArr.length - 1];
 
@@ -307,13 +308,14 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
 
     // ─────────────────────────────────────────
     // 1M BREAK STRUCTURE
+    // Compares last closed 1m candle vs the one before it to detect micro-breakouts
     // ─────────────────────────────────────────
-    const last5 = index1m.slice(-2, -1);
-    const max5High = Math.max(...last5.map(c => c.high));
-    const min5Low = Math.min(...last5.map(c => c.low));
+    const prevCandles = index1m.slice(-2, -1);   // ✅ renamed: was misleadingly called last5
+    const prevHigh = Math.max(...prevCandles.map(c => c.high));  // ✅ renamed from max5High
+    const prevLow = Math.min(...prevCandles.map(c => c.low));   // ✅ renamed from min5Low
 
-    diag.breakUp = last1m.close > max5High;
-    diag.breakDown = last1m.close < min5Low;
+    diag.breakUp = last1m.close > prevHigh;
+    diag.breakDown = last1m.close < prevLow;
 
 
     // ─────────────────────────────────────────
@@ -379,14 +381,15 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     }
 
     // ── PRO FILTER #4 — MULTI-TF ALIGNMENT ──
-    // 5m trend direction + 15m structure must align with daily bias
-    // Without this → false breakouts on wrong side
+    // 5m trend direction + 15m structure must align with daily bias.
+    // NOTE: bullishStructure / bearishStructure (15m HH/HL, LH/LL) are embedded here.
+    // Trend setups downstream do NOT need to re-check them — trendAligned is the gate.
     diag.trendAligned =
         (diag.dailyBias === "BULLISH" && diag.trendUp && diag.bullishStructure) ||
         (diag.dailyBias === "BEARISH" && diag.trendDown && diag.bearishStructure);
 
     if (!diag.trendAligned) {
-        return { signal: "NO_TRADE", reason: "multi_tf_misaligned ", ...diag };
+        return { signal: "NO_TRADE", reason: "multi_tf_misaligned", ...diag };
     }
 
     // ── PRO FILTER #5 — BREAKOUT STRENGTH ───
@@ -405,7 +408,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         diag.dailyBias === "BEARISH" &&
         diag.trendStrong &&
         diag.rsiBearish &&
-        (diag.trendDown || diag.bigCandle) &&
+        (diag.trendDown || diag.breakoutStrong) &&   // ✅ breakoutStrong wired in (bigCandle+strongBody+vol)
         !(diag.gapDown && !diag.breakDown && !gapDownFilled) && // ✅ FIX #8
         diag.volConfirm &&
         diag.belowVWAP   // ✅ PRO — institutional bias confirmation
@@ -415,7 +418,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         diag.dailyBias === "BULLISH" &&
         diag.trendStrong &&
         diag.rsiBullish &&
-        (diag.trendUp || diag.bigCandle) &&
+        (diag.trendUp || diag.breakoutStrong) &&     // ✅ breakoutStrong wired in (bigCandle+strongBody+vol)
         !(diag.gapUp && !diag.breakUp && !gapUpFilled) &&       // ✅ FIX #8
         diag.volConfirm &&
         diag.aboveVWAP   // ✅ PRO — institutional bias confirmation
