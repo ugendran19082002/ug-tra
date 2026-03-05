@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import os from "os";
 
 // ─────────────────────────────────────────
@@ -63,9 +66,13 @@ export function buildTimeframe(data, size) {
         }
     }
 
-    if (bucket.length) {
+    // ⚠ CRITICAL: Only push the last bucket if it's complete.
+    // An incomplete bucket (e.g. 3 out of 5 1m bars for a 5m candle)
+    // has provisional OHLC values — using it for signals causes false entries.
+    if (bucket.length === size) {
         result.push(aggregate(bucket));
     }
+    // else: drop it — it's still forming
 
     return result;
 }

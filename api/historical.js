@@ -1,8 +1,11 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import axios from "axios";
 import { logger } from "../logger.js";
 import { buildHeaders, sleep } from "../helpers.js";
 
-const BASE_URL = "https://apiconnect.angelone.in";
+const BASE_URL = process.env.ANGELONE_BASE_URL || "https://apiconnect.angelone.in";
 
 // ─────────────────────────────────────────
 // ANGELONE HISTORICAL (index candles)
@@ -20,6 +23,17 @@ export async function getHistorical(jwt, exchange, token, interval, fromdate, to
 
         if (res.data?.errorCode === "AG8001") {
             throw new Error("INVALID_TOKEN");
+        }
+
+        if (res.data?.errorcode === "AB1004" || res.data?.errorCode === "AB1004" || res.data?.message === "TooManyRequests") {
+            if (retries > 0) {
+                logger.warn(`⚠ Rate-limit (API limits) — retrying in 2s… (${retries} left)`);
+                await sleep(2000);
+                return getHistorical(jwt, exchange, token, interval, fromdate, todate, retries - 1);
+            } else {
+                logger.error(`❌ Rate-limit exhausted`);
+                return [];
+            }
         }
 
         const candles = res.data?.data;
@@ -45,6 +59,9 @@ export async function getHistorical(jwt, exchange, token, interval, fromdate, to
         return candles;
 
     } catch (err) {
+        if (err.message === "INVALID_TOKEN") {
+            throw err;
+        }
         if (err.response?.status === 403 && retries > 0) {
             logger.warn(`⚠ Rate-limit — retrying in 2s… (${retries} left)`);
             await sleep(2000);
@@ -119,8 +136,8 @@ export async function getHistorical(jwt, exchange, token, interval, fromdate, to
 
 export async function getFuture(token, fromdate, todate, interval = 2, retries = 3) {
 
-    const INSTRUMENT_KEY = `BSE_FO|${token}`;
-    const BASE_URL = "https://api.upstox.com/v3";
+    const INSTRUMENT_KEY = `${process.env.EXCHANGE}_FO|${token}`;
+    const BASE_URL = process.env.UPSTOX_BASE_URL || "https://api.upstox.com/v3";
 
     const today = new Date().toISOString().slice(0, 10);
     const toDate = (todate ?? "").slice(0, 10) || today;
@@ -223,11 +240,11 @@ export async function getFuture(token, fromdate, todate, interval = 2, retries =
 
         if (err.response?.status === 403 && retries > 0) {
             logger.warn(`⚠ Rate-limit — retrying (${retries} left)`);
-            await new Promise(r => setTimeout(r, 2000));
+            await sleep(2000);
             return getFuture(token, fromdate, todate, interval, retries - 1);
         }
 
-        logger.error(`❌ Future fetch failed: ${err.message}`);
+        logger.error(`❌ Future fetch failed: ${err}`);
         return [];
     }
 }

@@ -5,19 +5,20 @@ import { logger } from "./logger.js";
 
 dotenv.config();
 
-const BASE_URL = "https://apiconnect.angelone.in";
+const BASE_URL = process.env.ANGELONE_BASE_URL || "https://apiconnect.angelone.in";
+const LOT_SIZE = parseInt(process.env.LOT_SIZE ?? "20");
 
 // ─────────────────────────────────────────────────────
 // PLACE REGULAR MKT ORDER (AngelOne)
 // ─────────────────────────────────────────────────────
-async function placeRegularOrder(jwtToken, symbol, token, transactionType, qty = 20) {
+async function placeRegularOrder(jwtToken, symbol, token, transactionType, qty = LOT_SIZE) {
     try {
         const body = {
             variety: "NORMAL",
             tradingsymbol: symbol,
             symboltoken: String(token),
             transactiontype: transactionType,
-            exchange: "BFO",
+            exchange: process.env.EXCHANGE_SEGMENT || "BFO",
             ordertype: "MARKET",
             producttype: "CARRYFORWARD",
             duration: "DAY",
@@ -27,7 +28,7 @@ async function placeRegularOrder(jwtToken, symbol, token, transactionType, qty =
         const res = await axios.post(
             `${BASE_URL}/rest/secure/angelbroking/order/v1/placeOrder`,
             body,
-            { headers: buildHeaders(jwtToken) }
+            { headers: buildHeaders(jwtToken), timeout: 8000 }
         );
 
         if (res.data?.status) {
@@ -46,13 +47,13 @@ async function placeRegularOrder(jwtToken, symbol, token, transactionType, qty =
 // ─────────────────────────────────────────────────────
 // PLACE STOP LOSS ORDER (STOPLOSS_MARKET)
 // ─────────────────────────────────────────────────────
-async function placeStopLossOrder(jwtToken, symbol, token, triggerPrice, qty = 20) {
+async function placeStopLossOrder(jwtToken, symbol, token, triggerPrice, transactionType = "SELL", qty = LOT_SIZE) {
     try {
         const body = {
             variety: "STOPLOSS",
             tradingsymbol: symbol,
             symboltoken: String(token),
-            transactiontype: "SELL",
+            transactiontype: transactionType,
             exchange: "BFO",
             ordertype: "STOPLOSS_MARKET",
             producttype: "CARRYFORWARD",
@@ -65,7 +66,7 @@ async function placeStopLossOrder(jwtToken, symbol, token, triggerPrice, qty = 2
         const res = await axios.post(
             `${BASE_URL}/rest/secure/angelbroking/order/v1/placeOrder`,
             body,
-            { headers: buildHeaders(jwtToken) }
+            { headers: buildHeaders(jwtToken), timeout: 8000 }
         );
 
         if (res.data?.status) {
@@ -84,13 +85,13 @@ async function placeStopLossOrder(jwtToken, symbol, token, triggerPrice, qty = 2
 // ─────────────────────────────────────────────────────
 // PLACE TARGET LIMIT ORDER
 // ─────────────────────────────────────────────────────
-async function placeLimitOrder(jwtToken, symbol, token, price, qty = 20) {
+async function placeLimitOrder(jwtToken, symbol, token, price, transactionType = "SELL", qty = LOT_SIZE) {
     try {
         const body = {
             variety: "NORMAL",
             tradingsymbol: symbol,
             symboltoken: String(token),
-            transactiontype: "SELL",
+            transactiontype: transactionType,
             exchange: "BFO",
             ordertype: "LIMIT",
             producttype: "CARRYFORWARD",
@@ -102,7 +103,7 @@ async function placeLimitOrder(jwtToken, symbol, token, price, qty = 20) {
         const res = await axios.post(
             `${BASE_URL}/rest/secure/angelbroking/order/v1/placeOrder`,
             body,
-            { headers: buildHeaders(jwtToken) }
+            { headers: buildHeaders(jwtToken), timeout: 8000 }
         );
 
         if (res.data?.status) {
@@ -125,7 +126,7 @@ export async function getPositions(jwtToken) {
     try {
         const res = await axios.get(
             `${BASE_URL}/rest/secure/angelbroking/order/v1/getPosition`,
-            { headers: buildHeaders(jwtToken) }
+            { headers: buildHeaders(jwtToken), timeout: 8000 }
         );
         if (res.data?.status && res.data.data) {
             return res.data.data;
@@ -144,7 +145,7 @@ async function getOrderBook(jwtToken) {
     try {
         const res = await axios.get(
             `${BASE_URL}/rest/secure/angelbroking/order/v1/getOrderBook`,
-            { headers: buildHeaders(jwtToken) }
+            { headers: buildHeaders(jwtToken), timeout: 8000 }
         );
         if (res.data?.status && res.data.data) {
             return res.data.data;
@@ -256,8 +257,8 @@ export async function checkExitAndCleanup(jwtToken, symbol, params = {}) {
 
         if (triggered) {
             logger.info(`🎯 Index Level Hit (LTP:${price} SL:${indexSL} TGT:${indexTGT}) — Triggering Market Exit`);
-            await marketExit(jwtToken, symbol);
-            return;
+            const exited = await marketExit(jwtToken, symbol);
+            return exited;
         }
     }
 
@@ -269,6 +270,8 @@ export async function checkExitAndCleanup(jwtToken, symbol, params = {}) {
     if (!existing) {
         await cleanupOrders(jwtToken, symbol);
     }
+
+    return false;
 }
 
 // ─────────────────────────────────────────────────────
@@ -333,25 +336,26 @@ export async function executeOrder(jwt, signal) {
 
     logger.info(`📐 Simplified Option Levels | LTP:${optionLTP} | SL:${optionSL} (pts:${slPts}) | TGT:${optionTarget} (pts:${tgtPts})`);
 
+    // Entry is always BUY (long options: CE or PE)
     const transactionType = "BUY";
+    const exitType = "SELL";  // exit long position
 
     // 1️⃣ Place entry BUY
-    const orderNo = await placeRegularOrder(jwt, symbol, optionToken, transactionType, 20);
+    const orderNo = await placeRegularOrder(jwt, symbol, optionToken, transactionType, LOT_SIZE);
     if (!orderNo) {
         logger.error("❌ AngelOne Entry order failed — skipping SL/TGT creation");
         return;
     }
 
-    // Give broker time to process entry
     await sleep(1000);
 
-    // 2️⃣ Place SL-M Order
-    const slOrderId = await placeStopLossOrder(jwt, symbol, optionToken, optionSL, 20);
+    // 2️⃣ Place SL-M Order (SELL to exit long)
+    const slOrderId = await placeStopLossOrder(jwt, symbol, optionToken, optionSL, exitType, LOT_SIZE);
 
     await sleep(500);
 
-    // 3️⃣ Place Target Limit Order
-    const tgtOrderId = await placeLimitOrder(jwt, symbol, optionToken, optionTarget, 20);
+    // 3️⃣ Place Target Limit Order (SELL to exit long)
+    const tgtOrderId = await placeLimitOrder(jwt, symbol, optionToken, optionTarget, exitType, LOT_SIZE);
 
     return { orderNo, slOrderId, tgtOrderId, optionSL, optionTarget };
 }

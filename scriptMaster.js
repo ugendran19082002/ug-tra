@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import fs from "fs";
 let scripMasterCache = null;
 import winston from "winston";
@@ -32,8 +35,8 @@ function getISTTime(date = new Date()) {
 
 export async function loadScripMaster(forceRefresh = false) {
 
-    const CACHE_FILE = "./scripMaster_sensex.json";
-    const SYMBOL = "SENSEX";
+    const SYMBOL = process.env.INDEX_SYMBOL || "SENSEX";
+    const CACHE_FILE = `./scripMaster_${SYMBOL.toLowerCase()}.json`;
 
     // 1️⃣ In-memory cache
     if (scripMasterCache && !forceRefresh) {
@@ -42,16 +45,18 @@ export async function loadScripMaster(forceRefresh = false) {
 
     // 2️⃣ Load from local file
     if (!forceRefresh && fs.existsSync(CACHE_FILE)) {
-        logger.info("📂 Loading SENSEX ScripMaster from local cache...");
+
+        logger.info("📂 Loading " + SYMBOL + " ScripMaster from local cache...");
         const raw = fs.readFileSync(CACHE_FILE, "utf8");
         scripMasterCache = JSON.parse(raw);
+
         return scripMasterCache;
     }
 
     // 3️⃣ Download full master
     logger.info("🌐 Downloading Full ScripMaster...");
     const res = await axios.get(
-        "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        process.env.SCRIP_MASTER_URL || "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
     );
 
     if (!Array.isArray(res.data)) {
@@ -67,9 +72,10 @@ export async function loadScripMaster(forceRefresh = false) {
     logger.info(`🎯 Filtered ${filtered.length} SENSEX instruments`);
 
     scripMasterCache = filtered;
+    console.log(filtered[0]);
 
     fs.writeFileSync(CACHE_FILE, JSON.stringify(filtered));
-    logger.info("✅ SENSEX ScripMaster cached locally.");
+    logger.info(`✅ ${SYMBOL} ScripMaster cached locally.`);
 
     return scripMasterCache;
 }

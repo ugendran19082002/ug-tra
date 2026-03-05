@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import axios from "axios";
 import { logger } from "./logger.js";
 import { loadScripMaster } from "./scriptMaster.js";
@@ -48,7 +51,7 @@ export async function getATMOptionTokens(symbolName = "SENSEX", price, refDate =
 
     const options = res
         .filter(i =>
-            i.exch_seg === "BFO" &&
+            i.exch_seg === (process.env.EXCHANGE_SEGMENT || "BFO") &&
             i.instrumenttype === "OPTIDX" &&
             i.name === symbolName
         )

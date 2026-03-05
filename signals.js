@@ -1,3 +1,29 @@
+import dotenv from "dotenv";
+dotenv.config();
+
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+
+// ── Load config-driven strategy parameters ─────────────────────────────────
+let CFG;
+try {
+    CFG = require("./strategy.config.json");
+} catch (e) {
+    // Fallback defaults if config file missing
+    CFG = {
+        TIME_START_MIN: 558, TIME_END_MIN: 900,
+        DAILY_EMA_PERIOD: 20, GAP_THRESHOLD: 300,
+        ADX_MIN: 20, ADX_CHOP: 18,
+        ATR_MIN: 40, ATR_SL_MULTIPLIER: 0.85, ATR_TGT_MULTIPLIER: 2.5, ATR_SL_CAP: 90, ATR_TGT_CAP: 300,
+        RSI_BULL_MIN: 55, RSI_BEAR_MAX: 45, RR_MIN: 2.0,
+        LIQ_ADX_HIGH: 30, LIQ_ADX_MED: 20,
+        LIQ_MULT_HIGH: 0.25, LIQ_MULT_MED: 0.20, LIQ_MULT_LOW_BASE: 0.15, LIQ_FLOOR: 18, LIQ_CAP: 150,
+        STRONG_BODY_RATIO: 0.6, STRONG_BODY_5M_RATIO: 0.45, BIG_CANDLE_MULT: 1.5,
+        CLOSE_NEAR_HIGH_RATIO: 0.2, CLOSE_NEAR_LOW_RATIO: 0.2,
+        CLOSE_NEAR_HIGH_5M_RATIO: 0.35, CLOSE_NEAR_LOW_5M_RATIO: 0.35,
+    };
+}
+
 import { buildTimeframe } from "./helpers.js";
 import {
     calculateEMA,
@@ -55,13 +81,8 @@ const getBaseDiag = (indexLTP = "0.00", futureLTP = "0.00") => ({
     closeNearLow: false,
     breakUp: false,
     breakDown: false,
+
     volConfirm: false,
-    equalHigh: false,
-    sweepHigh: false,
-    equalLow: false,
-    sweepLow: false,
-    bullishRejection: false,
-    bearishRejection: false,
     exhaustedBull: false,
     exhaustedBear: false,
     volume: 0,
@@ -122,9 +143,8 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     const istStr = new Date(last1m.time).toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
     const istDate = new Date(istStr);
     const minuteOfDay = istDate.getHours() * 60 + istDate.getMinutes();
-    // 9:20 = 560 mins | 14:45 = 885 mins
-    const TIME_START = 558; // 9:18 IST
-    const TIME_END = 900; // 15:00 IST
+    const TIME_START = CFG.TIME_START_MIN; // default 9:18 IST
+    const TIME_END = CFG.TIME_END_MIN;   // default 15:00 IST
 
     // ─────────────────────────────────────────
     // INITIAL DIAGNOSTIC
@@ -134,15 +154,12 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     diag.warnings = [];
 
     diag.timeAllowed = minuteOfDay >= TIME_START && minuteOfDay <= TIME_END;
-    if (!diag.timeAllowed) {
-        return { signal: "NO_TRADE", reason: "time_filter", ...diag };
-    }
 
     // ─────────────────────────────────────────
     // DAILY BIAS
     // FIX #1 — Enforce minimum 20 daily candles for reliable EMA
     // ─────────────────────────────────────────
-    const DAILY_EMA_PERIOD = 20;
+    const DAILY_EMA_PERIOD = CFG.DAILY_EMA_PERIOD;
     const dailyData = data1D?.length >= DAILY_EMA_PERIOD ? data1D : [];
 
     if (dailyData.length < DAILY_EMA_PERIOD) {
@@ -188,7 +205,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     // ─────────────────────────────────────────
     // GAP ANALYSIS
     // ─────────────────────────────────────────
-    const GAP_THRESHOLD = 300;
+    const GAP_THRESHOLD = CFG.GAP_THRESHOLD;
     diag.gapPoints = dailyLast.open - prevDay.close;
     diag.gapUp = diag.gapPoints > GAP_THRESHOLD;
     diag.gapDown = diag.gapPoints < -GAP_THRESHOLD;
@@ -255,8 +272,8 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     diag.currentATR = rawATR.toFixed(2);
     const currentATR = rawATR;
 
-    diag.dynamicSL = parseFloat(Math.min(90, currentATR * 0.85).toFixed(2));
-    diag.dynamicTGT = parseFloat(Math.min(300, currentATR * 2.5).toFixed(2));
+    diag.dynamicSL = parseFloat(Math.min(CFG.ATR_SL_CAP, currentATR * CFG.ATR_SL_MULTIPLIER).toFixed(2));
+    diag.dynamicTGT = parseFloat(Math.min(CFG.ATR_TGT_CAP, currentATR * CFG.ATR_TGT_MULTIPLIER).toFixed(2));
 
     const adxArr = calculateADX(index5m, 14, diag.warnings);
     const rawADX = adxArr[adxArr.length - 1];
@@ -272,20 +289,19 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
 
     diag.currentADX = rawADX.toFixed(1);
     const currentADX = rawADX;
-    diag.trendStrong = currentADX >= 20;
+    diag.trendStrong = currentADX >= CFG.ADX_MIN;
 
-    const rsiArr = calculateRSI(index5m, 14, diag.warnings);  // ✅ FIX #4
+    const rsiArr = calculateRSI(index5m, 14, diag.warnings);
     const currentRSI = rsiArr[rsiArr.length - 1];
     diag.currentRSI = currentRSI.toFixed(1);
-    diag.rsiBullish = currentRSI > 55;
-    diag.rsiBearish = currentRSI < 45;
+    diag.rsiBullish = currentRSI > CFG.RSI_BULL_MIN;
+    diag.rsiBearish = currentRSI < CFG.RSI_BEAR_MAX;
 
     // ─────────────────────────────────────────
     // PRO FILTER #3 — ATR DEAD MARKET GUARD
     // Skip trades when volatility is too low
     // ─────────────────────────────────────────
-    const ATR_MIN_THRESHOLD = 40;
-    if (currentATR < ATR_MIN_THRESHOLD) {
+    if (currentATR < CFG.ATR_MIN) {
         return { signal: "NO_TRADE", reason: "low_volatility_atr", ...diag };
     }
 
@@ -299,6 +315,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     diag.breakUp = last1m.close > max5High;
     diag.breakDown = last1m.close < min5Low;
 
+
     // ─────────────────────────────────────────
     // VOLUME + CANDLE
     // ─────────────────────────────────────────
@@ -307,73 +324,15 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     const body = Math.abs(last1m.close - last1m.open);
     const range = last1m.high - last1m.low;
 
-    diag.strongBody = range > 0 && (body / range) > 0.6;
+    diag.strongBody = range > 0 && (body / range) > CFG.STRONG_BODY_RATIO;
     diag.bigCandle =
         prev1m &&
-        (range > (prev1m.high - prev1m.low) * 1.5) &&
+        (range > (prev1m.high - prev1m.low) * CFG.BIG_CANDLE_MULT) &&
         diag.strongBody;
 
-    diag.closeNearHigh = range > 0 && (last1m.high - last1m.close) / range < 0.2;
-    diag.closeNearLow = range > 0 && (last1m.close - last1m.low) / range < 0.2;
+    diag.closeNearHigh = range > 0 && (last1m.high - last1m.close) / range < CFG.CLOSE_NEAR_HIGH_RATIO;
+    diag.closeNearLow = range > 0 && (last1m.close - last1m.low) / range < CFG.CLOSE_NEAR_LOW_RATIO;
 
-    // ─────────────────────────────────────────
-    // LIQUIDITY SWEEP
-    // ─────────────────────────────────────────
-    let LIQ_THRESHOLD;
-
-    if (currentADX > 30) {
-        LIQ_THRESHOLD = currentATR * 0.25;
-    } else if (currentADX > 20) {
-        LIQ_THRESHOLD = currentATR * 0.2;
-    } else {
-        LIQ_THRESHOLD = Math.max(currentATR * 0.15, 18);
-    }
-
-    LIQ_THRESHOLD = Math.min(LIQ_THRESHOLD, 150); // cap
-
-    const recent = index5m.slice(-6, -2);
-    const recentHighs = recent.map(c => c.high);
-    const recentLows = recent.map(c => c.low);
-
-    const recentMaxHigh = Math.max(...recentHighs);
-    const recentMinLow = Math.min(...recentLows);
-
-    diag.equalHigh =
-        recentHighs.filter(h => h >= recentMaxHigh - LIQ_THRESHOLD).length >= 2;
-
-    diag.equalLow =
-        recentLows.filter(l => l <= recentMinLow + LIQ_THRESHOLD).length >= 2;
-
-    diag.sweepLow =
-        diag.equalLow &&
-        prev5m.low < recentMinLow &&
-        prev5m.close > recentMinLow;
-
-    diag.sweepHigh =
-        diag.equalHigh &&
-        prev5m.high > recentMaxHigh &&
-        prev5m.close < recentMaxHigh;
-
-    const body5m = Math.abs(last5m.close - last5m.open);
-    const range5m = last5m.high - last5m.low;
-
-    const strongBody5m = range5m > 0 && (body5m / range5m) > 0.45;
-    const closeNearHigh5m = range5m > 0 && (last5m.high - last5m.close) / range5m < 0.35;
-    const closeNearLow5m = range5m > 0 && (last5m.close - last5m.low) / range5m < 0.35;
-
-    diag.bullishRejection =
-        diag.sweepLow &&
-        last5m.close > last5m.open &&
-        closeNearHigh5m &&
-        strongBody5m &&
-        diag.volConfirm;
-
-    diag.bearishRejection =
-        diag.sweepHigh &&
-        last5m.close < last5m.open &&
-        closeNearLow5m &&
-        strongBody5m &&
-        diag.volConfirm;
 
     // ─────────────────────────────────────────
     // FIX #6 — Compute absolute SL and Target price levels per side
@@ -409,9 +368,14 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     // ─────────────────────────────────────────
 
     // ── Priority 1: CHOP FILTER ──────────────
-    // ADX < 18 AND RSI near midline → dead/ranging market
-    if (currentADX < 18 && currentRSI > 45 && currentRSI < 55) {
+    // ADX < ADX_CHOP AND RSI near midline → dead/ranging market
+    if (currentADX < CFG.ADX_CHOP && currentRSI > CFG.RSI_BEAR_MAX && currentRSI < CFG.RSI_BULL_MIN) {
         return { signal: "NO_TRADE", reason: "choppy_market", ...diag };
+    }
+
+    // ── Priority 2: TIME FILTER ──────────────
+    if (!diag.timeAllowed) {
+        return { signal: "NO_TRADE", reason: "time_filter", ...diag };
     }
 
     // ── PRO FILTER #4 — MULTI-TF ALIGNMENT ──
@@ -458,8 +422,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
 
 
     if (bearishTrendSetup) {
-
-        console.log("BEARISH", diag.breakDown);
+        logger.debug(`🔻 BEARISH setup | breakDown:${diag.breakDown} ADX:${diag.currentADX}`);
 
         return {
             signal: "PE",
@@ -471,7 +434,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     }
 
     if (bullishTrendSetup) {
-        console.log("BULLISH", diag.breakUp);
+        logger.debug(`🔺 BULLISH setup | breakUp:${diag.breakUp} ADX:${diag.currentADX}`);
         return {
             signal: "CE",
             reason: "trend_continuation_up",

@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 // ─────────────────────────────────────────
 // EMA
 // FIX #10 — Seed with SMA of first `period` candles (not data[0].close)

@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import fs from "fs";
 import { logger } from "../logger.js";
 import { loadScripMaster } from "../scriptMaster.js";
@@ -14,7 +17,7 @@ function parseExpiry(str) {
 // ─────────────────────────────────────────
 // FUTURE TOKEN (cached daily)
 // ─────────────────────────────────────────
-export async function getFutureToken(symbolName = "SENSEX", refDate = new Date()) {
+export async function getFutureToken(symbolName = process.env.INDEX_SYMBOL || "SENSEX", refDate = new Date()) {
     const today = new Date().toDateString();
     const isLive = new Date(refDate).toDateString() === today;
 
@@ -28,13 +31,14 @@ export async function getFutureToken(symbolName = "SENSEX", refDate = new Date()
 
     const now = new Date(refDate);
     const futures = res
-        .filter(i => i.exch_seg === "BFO" && i.instrumenttype === "FUTIDX" && i.name === symbolName)
+        .filter(i => i.exch_seg === (process.env.EXCHANGE_SEGMENT || "BFO") && i.instrumenttype === "FUTIDX" && i.name === symbolName)
         .map(i => ({ ...i, expiryDate: parseExpiry(i.expiry) }))
         .filter(i => i.expiryDate >= now)
         .sort((a, b) => a.expiryDate - b.expiryDate);
+    console.log("futures", (process.env.EXCHANGE_SEGMENT || "BFO"), symbolName);
 
     if (!futures.length) {
-        logger.error("No valid futures found");
+        logger.error("No valid futures found " + process.env.EXCHANGE_SEGMENT + " " + process.env.INDEX_SYMBOL + " " + futures);
         process.exit(1);
     }
 
