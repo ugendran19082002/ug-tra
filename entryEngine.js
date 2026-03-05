@@ -351,12 +351,19 @@ Volume OK   : ${r.volConfirm}
     tradeLogger.info(msg);
     await sendTelegram(msg);
 
-    // ── Open position in Position Manager ───────────────────────────────────────────
+    // ── Place order FIRST — only open position if order succeeds ───────────
     _tradeLock = true;   // ⚠ Lock: no new entries until this trade resolves
-    openPosition(signalObj);
 
-    // ── Place order via Queue (or direct fallback) ─────────────────────
-    await addOrderJob(signalObj, jwt);
+    const orderOk = await addOrderJob(signalObj, jwt);
+
+    if (!orderOk) {
+        logger.error("❌ Order placement failed — position NOT opened, lock released");
+        _tradeLock = false;
+        return { signal: "NO_TRADE", reason: "order_failed" };
+    }
+
+    // ── Open position in Position Manager AFTER order is confirmed ─────────
+    openPosition(signalObj);
 
     // Lock stays ON — released via onTradeExit() when the trade closes
     return signalObj;

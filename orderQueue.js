@@ -92,6 +92,11 @@ async function ensureQueue() {
 
 export function setJWT(jwt) { _jwt = jwt; }
 
+/**
+ * Enqueues an order job via BullMQ, or falls back to direct execution.
+ * Returns true if order was successfully placed/enqueued, false otherwise.
+ * IMPORTANT: openPosition() should only be called in entryEngine AFTER this returns true.
+ */
 export async function addOrderJob(signalObj, jwt) {
     if (jwt) _jwt = jwt;
     await ensureQueue();
@@ -101,14 +106,17 @@ export async function addOrderJob(signalObj, jwt) {
         try {
             await orderQueue.add("placeOrder", { signalObj }, { jobId });
             logger.info(`📥 OrderQueue: enqueued job ${jobId}`);
+            return true; // Queued = optimistically success
         } catch (err) {
             logger.warn(`⚠ OrderQueue add failed: ${err.message} — falling back to direct execution`);
             queueReady = false;
-            await executeOrder(jwt ?? _jwt, signalObj);
+            const result = await executeOrder(jwt ?? _jwt, signalObj);
+            return !!(result?.orderNo);
         }
     } else {
         // Fallback: direct execution
-        await executeOrder(jwt ?? _jwt, signalObj);
+        const result = await executeOrder(jwt ?? _jwt, signalObj);
+        return !!(result?.orderNo);
     }
 }
 

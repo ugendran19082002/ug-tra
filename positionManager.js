@@ -6,6 +6,11 @@ dotenv.config();
 //  Tracks the current open position and persists it to disk.
 //  On bot restart, the open position is automatically reloaded so the bot
 //  can continue monitoring SL / Target without re-entering the trade.
+//
+//  Best Practices:
+//  - openPosition() called ONLY after order is confirmed placed
+//  - All state mutations go through savePosition() to stay in sync
+//  - Invalid signalObj fields are validated with warnings, never throw
 // ═════════════════════════════════════════════════════════════════════════════
 import fs from "fs";
 import path from "path";
@@ -18,17 +23,20 @@ const STATE_FILE = path.resolve("position_state.json");
 // ─────────────────────────────────────────
 function loadPosition() {
     try {
-        if (fs.existsSync(STATE_FILE)) {
-            const raw = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-            if (raw && raw.symbol) {
-                logger.info(`📂 PositionManager: restored position — ${raw.symbol} ${raw.side} @ ${raw.entry}`);
-                return raw;
-            }
+        if (!fs.existsSync(STATE_FILE)) return null;
+        const raw = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+        // Validate restored position has required fields
+        if (raw && raw.optionSymbol && raw.side && raw.entry) {
+            logger.info(`📂 PositionManager: restored — ${raw.optionSymbol} ${raw.side} @ ${raw.entry}`);
+            return raw;
         }
+        logger.warn("⚠ PositionManager: state file missing required fields — ignoring");
+        clearPositionFile();
+        return null;
     } catch (e) {
         logger.warn(`⚠ PositionManager: could not load state — ${e.message}`);
+        return null;
     }
-    return null;
 }
 
 function savePosition(pos) {
@@ -58,6 +66,7 @@ let _position = loadPosition();  // null = flat
 
 /**
  * Open a new position from a signalObj returned by entryEngine.
+ * MUST be called only after the broker order is confirmed placed.
  * @param {Object} signalObj
  */
 export function openPosition(signalObj) {
@@ -66,26 +75,35 @@ export function openPosition(signalObj) {
         return;
     }
 
+    // Validate required fields
+    if (!signalObj?.signal || !signalObj?.entryPrice) {
+        logger.error("❌ PositionManager: invalid signalObj — missing signal or entryPrice");
+        return;
+    }
+
+    if (!signalObj.optionSymbol) {
+        logger.warn("⚠ PositionManager: optionSymbol missing — position tracking may be incomplete");
+    }
+
     _position = {
-        symbol: process.env.SYMBOLTOKEN ?? "SENSEX",
-        side: signalObj.signal,        // "CE" | "PE"
+        optionSymbol: signalObj.optionSymbol ?? null,   // e.g. "SENSEX2630580300PE"
+        optionToken: signalObj.optionToken ?? null,
+        side: signalObj.signal,                 // "CE" | "PE"
         entry: signalObj.entryPrice,
         sl: signalObj.slPrice,
         target: signalObj.tgtPrice,
         slPoints: signalObj.slPoints,
         tgtPoints: signalObj.tgtPoints,
-        openedAt: new Date().toISOString(),
-        optionToken: signalObj.optionToken ?? null,
-        optionSymbol: signalObj.optionSymbol ?? null,
         optionEntry: signalObj.optionLTP ?? null,
         optionSL: signalObj.optionSL ?? null,
         optionTarget: signalObj.optionTarget ?? null,
+        openedAt: new Date().toISOString(),
     };
 
     savePosition(_position);
     logger.info(
         `📌 PositionManager: OPENED ${_position.side} @ ${_position.entry} | ` +
-        `SL:${_position.sl} | TGT:${_position.target}`
+        `SL:${_position.sl} | TGT:${_position.target} | Symbol:${_position.optionSymbol ?? "N/A"}`
     );
 }
 
@@ -103,7 +121,7 @@ export function closePosition(reason = "UNKNOWN", exitPrice = 0) {
     const closed = { ..._position, closedAt: new Date().toISOString(), exitReason: reason, exitPrice };
     logger.info(
         `❌ PositionManager: CLOSED ${closed.side} | Reason:${reason} | ` +
-        `Exit:${exitPrice} | Entry:${closed.entry}`
+        `Exit:${exitPrice} | Entry:${closed.entry} | Symbol:${closed.optionSymbol ?? "N/A"}`
     );
 
     _position = null;
@@ -118,18 +136,20 @@ export function isFlat() { return _position === null; }
 export function isOpen() { return _position !== null; }
 
 /** Returns the full position object, or null if flat. */
-export function getPosition() { return _position; }
+export function getPosition() { return _position ? { ..._position } : null; }   // defensive copy
 
 /**
  * Update SL/Target on an existing position (e.g. trailing stop).
+ * @param {Object} updates - partial fields to merge into position
  */
 export function updatePosition(updates = {}) {
-    if (!_position) return;
-    _position = { ..._position, ...updates };
+    if (!_position) {
+        logger.warn("⚠ PositionManager: updatePosition() called with no open position");
+        return;
+    }
+    _position = { ..._position, ...updates, updatedAt: new Date().toISOString() };
     savePosition(_position);
-    logger.info(
-        `🔄 PositionManager: updated — SL:${_position.sl} TGT:${_position.target}`
-    );
+    logger.info(`🔄 PositionManager: updated — SL:${_position.sl} TGT:${_position.target}`);
 }
 
 /**
@@ -142,7 +162,7 @@ export function logStatus() {
         logger.info(
             `📊 PositionManager: OPEN ${_position.side} | ` +
             `Entry:${_position.entry} SL:${_position.sl} TGT:${_position.target} | ` +
-            `Since:${_position.openedAt}`
+            `Symbol:${_position.optionSymbol ?? "N/A"} | Since:${_position.openedAt}`
         );
     }
 }
