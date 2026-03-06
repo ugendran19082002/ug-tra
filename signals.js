@@ -10,18 +10,7 @@ try {
     CFG = require("./strategy.config.json");
 } catch (e) {
     // Fallback defaults if config file missing
-    CFG = {
-        TIME_START_MIN: 558, TIME_END_MIN: 900,
-        DAILY_EMA_PERIOD: 20, GAP_THRESHOLD: 300,
-        ADX_MIN: 20, ADX_CHOP: 18,
-        ATR_MIN: 40, ATR_SL_MULTIPLIER: 0.85, ATR_TGT_MULTIPLIER: 2.5, ATR_SL_CAP: 90, ATR_TGT_CAP: 300,
-        RSI_BULL_MIN: 55, RSI_BEAR_MAX: 45, RR_MIN: 2.0,
-        LIQ_ADX_HIGH: 30, LIQ_ADX_MED: 20,
-        LIQ_MULT_HIGH: 0.25, LIQ_MULT_MED: 0.20, LIQ_MULT_LOW_BASE: 0.15, LIQ_FLOOR: 18, LIQ_CAP: 150,
-        STRONG_BODY_RATIO: 0.6, STRONG_BODY_5M_RATIO: 0.45, BIG_CANDLE_MULT: 1.5,
-        CLOSE_NEAR_HIGH_RATIO: 0.2, CLOSE_NEAR_LOW_RATIO: 0.2,
-        CLOSE_NEAR_HIGH_5M_RATIO: 0.35, CLOSE_NEAR_LOW_5M_RATIO: 0.35,
-    };
+    CFG = require("./strategy.config.default.json");
 }
 
 import { buildTimeframe } from "./helpers.js";
@@ -30,11 +19,7 @@ import {
     calculateRSI,
     calculateATR,
     calculateADX,
-    findSupportResistance,
-    getRoundLevels,
-    cleanLevels,
     volumeSpike,
-    classifyOI,
     calculateVWAP
 } from "./indicators.js";
 
@@ -77,8 +62,6 @@ const getBaseDiag = (indexLTP = "0.00", futureLTP = "0.00") => ({
     tgtPrice: 0,   // ✅ FIX #6 — absolute target price level
     bigCandle: false,
     strongBody: false,
-    closeNearHigh: false,
-    closeNearLow: false,
     breakUp: false,
     breakDown: false,
 
@@ -178,6 +161,7 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
 
     const lastDailyEMA = dailyEMA[dailyEMA.length - 1];
 
+
     // Guard: EMA could be null if data < period (shouldn't happen given check above)
     if (lastDailyEMA === null) {
         diag.warnings.push("DAILY_EMA_NULL");
@@ -202,6 +186,52 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
 
     if (dailyBreakUp && diag.emaAbove) diag.dailyBias = "BULLISH";
     if (dailyBreakDown && !diag.emaAbove) diag.dailyBias = "BEARISH";
+
+    // ─────────────────────────────────────────
+    // PRO FILTER #2 — VWAP (Institutional Bias)
+    // CE → price > VWAP | PE → price < VWAP
+    // ─────────────────────────────────────────
+    const vwapArr = calculateVWAP(future1m);
+    const currentVWAP = vwapArr[vwapArr.length - 1];
+    diag.vwap = currentVWAP !== null ? parseFloat(currentVWAP.toFixed(2)) : null;
+    diag.aboveVWAP = currentVWAP !== null && lastFuture.close > currentVWAP;
+    diag.belowVWAP = currentVWAP !== null && lastFuture.close < currentVWAP;
+
+    // ─────────────────────────────────────────
+    // 5M TREND + INDICATORS
+    // FIX #3, #4, #5 — Pass shared warnings[] into all indicator functions
+    // ─────────────────────────────────────────
+    const ema5m = calculateEMA(index5m);
+    diag.currentEMA = ema5m[ema5m.length - 1]?.toFixed(2) || "0.00";
+    diag.trendUp = last5m.close > (ema5m[ema5m.length - 1] ?? -Infinity);
+    diag.trendDown = last5m.close < (ema5m[ema5m.length - 1] ?? Infinity);
+
+    const atrArr = calculateATR(index5m, 14, diag.warnings);
+    const rawATR = atrArr[atrArr.length - 1];
+    const currentATR = rawATR; // Define for downstream logic
+
+    if (rawATR !== null) {
+        diag.currentATR = rawATR.toFixed(2);
+        diag.dynamicSL = parseFloat(Math.min(CFG.ATR_SL_CAP, rawATR * CFG.ATR_SL_MULTIPLIER).toFixed(2));
+        diag.dynamicTGT = parseFloat(Math.min(CFG.ATR_TGT_CAP, rawATR * CFG.ATR_TGT_MULTIPLIER).toFixed(2));
+    }
+
+    const adxArr = calculateADX(index5m, 14, diag.warnings);
+    const rawADX = adxArr[adxArr.length - 1];
+    const currentADX = rawADX; // Define for downstream logic
+
+    if (rawADX !== null) {
+        diag.currentADX = rawADX.toFixed(1);
+        diag.trendStrong = rawADX >= CFG.ADX_MIN;
+    }
+
+    const rsiArr = calculateRSI(index5m, 14, diag.warnings);
+    const currentRSI = rsiArr[rsiArr.length - 1];
+    if (currentRSI !== null) {
+        diag.currentRSI = currentRSI.toFixed(1);
+        diag.rsiBullish = currentRSI > CFG.RSI_BULL_MIN;
+        diag.rsiBearish = currentRSI < CFG.RSI_BEAR_MAX;
+    }
 
     // ─────────────────────────────────────────
     // GAP ANALYSIS
@@ -240,70 +270,19 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
 
 
     // ─────────────────────────────────────────
-    // PRO FILTER #2 — VWAP (Institutional Bias)
-    // CE → price > VWAP | PE → price < VWAP
-    // ─────────────────────────────────────────
-    const vwapArr = calculateVWAP(future1m);
-    const currentVWAP = vwapArr[vwapArr.length - 1];
-    diag.vwap = currentVWAP !== null ? parseFloat(currentVWAP.toFixed(2)) : null;
-    diag.aboveVWAP = currentVWAP !== null && lastFuture.close > currentVWAP;
-    diag.belowVWAP = currentVWAP !== null && lastFuture.close < currentVWAP;
-
-    // ─────────────────────────────────────────
-    // 5M TREND + INDICATORS
-    // FIX #3, #4, #5 — Pass shared warnings[] into all indicator functions
-    // ─────────────────────────────────────────
-    const ema5m = calculateEMA(index5m);
-    diag.currentEMA = ema5m[ema5m.length - 1]?.toFixed(2) || "0.00";
-    diag.trendUp = last5m.close > (ema5m[ema5m.length - 1] ?? -Infinity);
-    diag.trendDown = last5m.close < (ema5m[ema5m.length - 1] ?? Infinity);
-
-    const atrArr = calculateATR(index5m, 14, diag.warnings);
-    const rawATR = atrArr[atrArr.length - 1];
-
-    // ✅ FIX #3 — No hardcoded fallback; return NO_TRADE if ATR unavailable
-    if (rawATR === null) {
-        return {
-            signal: "NO_TRADE",
-            reason: "atr_unavailable",
-            ...diag
-        };
-    }
-
-    diag.currentATR = rawATR.toFixed(2);
-    const currentATR = rawATR;
-
-    diag.dynamicSL = parseFloat(Math.min(CFG.ATR_SL_CAP, currentATR * CFG.ATR_SL_MULTIPLIER).toFixed(2));
-    diag.dynamicTGT = parseFloat(Math.min(CFG.ATR_TGT_CAP, currentATR * CFG.ATR_TGT_MULTIPLIER).toFixed(2));
- 
-    const adxArr = calculateADX(index5m, 14, diag.warnings);
-    const rawADX = adxArr[adxArr.length - 1];
-
-    // ✅ FIX #5 — null ADX means insufficient data → NO_TRADE
-    if (rawADX === null) {
-        return {
-            signal: "NO_TRADE",
-            reason: "insufficient_adx_data",
-            ...diag
-        };
-    }
-
-    diag.currentADX = rawADX.toFixed(1);
-    const currentADX = rawADX;
-    diag.trendStrong = currentADX >= CFG.ADX_MIN;
-
-    const rsiArr = calculateRSI(index5m, 14, diag.warnings);
-    const currentRSI = rsiArr[rsiArr.length - 1];
-    diag.currentRSI = currentRSI.toFixed(1);
-    diag.rsiBullish = currentRSI > CFG.RSI_BULL_MIN;
-    diag.rsiBearish = currentRSI < CFG.RSI_BEAR_MAX;
-
-    // ─────────────────────────────────────────
     // PRO FILTER #3 — ATR DEAD MARKET GUARD
     // Skip trades when volatility is too low
     // ─────────────────────────────────────────
-    if (currentATR < CFG.ATR_MIN) {
+    if (rawATR === null) {
+        return { signal: "NO_TRADE", reason: "atr_unavailable", ...diag };
+    }
+
+    if (rawATR < CFG.ATR_MIN) {
         return { signal: "NO_TRADE", reason: "low_volatility_atr", ...diag };
+    }
+
+    if (rawADX === null) {
+        return { signal: "NO_TRADE", reason: "insufficient_adx_data", ...diag };
     }
 
     // ─────────────────────────────────────────
@@ -332,9 +311,6 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
         (range > (prev1m.high - prev1m.low) * CFG.BIG_CANDLE_MULT) &&
         diag.strongBody;
 
-    diag.closeNearHigh = range > 0 && (last1m.high - last1m.close) / range < CFG.CLOSE_NEAR_HIGH_RATIO;
-    diag.closeNearLow = range > 0 && (last1m.close - last1m.low) / range < CFG.CLOSE_NEAR_LOW_RATIO;
-
 
     // ─────────────────────────────────────────
     // FIX #6 — Compute absolute SL and Target price levels per side
@@ -353,10 +329,10 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     const prevFuture5m = (future5m && future5m.length > 1) ? future5m[future5m.length - 2] : null;
 
     if (!future5m || future5m.length < 2) {
-        diag.warnings.push("OI_INSUFFICIENT");
+        diag.warnings.push("VOLUME_INSUFFICIENT");
         return {
             signal: "NO_TRADE",
-            reason: "insufficient_oi_data",
+            reason: "insufficient_volume_data",
             ...diag
         };
     }

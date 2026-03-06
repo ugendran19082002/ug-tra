@@ -47,7 +47,7 @@ export async function getHistorical(jwt, exchange, token, interval, fromdate, to
             return new Date(a[0]).getTime() - new Date(b[0]).getTime();
         });
 
-        logger.info(`📈 ${interval} candles: ${candles.length}`);
+        logger.debug(`📈 ${interval} candles: ${candles.length}`);
 
         // if (checkLastCandleStaleness(candles, "index", logger, 5)) {
         //     return [];

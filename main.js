@@ -50,6 +50,8 @@ async function main() {
     let lastSignal = null;
     let iteration = 0;
     let forceLogin = false;
+    let _lastWindowLog = null;
+    let _noTradeLogCount = 0;
 
     // ── WebSocket mode ───────────────────────────────────────────────────
     if (USE_WEBSOCKET) {
@@ -122,28 +124,34 @@ async function main() {
             const liveFrom = getTodayFromDate(29);
             const liveTo = formatCurrentDateTime();
             // const liveTo = process.env.LIVE_TO_DATE || formatCurrentDateTime();
-            // const liveTo = "2026-03-02 12:01";
+            // const liveTo = "2026-03-02 10:11";
             const futureToken = await getFutureToken(process.env.INDEX_SYMBOL || "SENSEX");
 
-            logger.info(`📅 Window: ${liveFrom} → ${liveTo}`);
+            const windowKey = `${liveFrom}_${liveTo}`;
+            if (windowKey !== _lastWindowLog) {
+                logger.info(`📅 Window: ${liveFrom} → ${liveTo}`);
+                _lastWindowLog = windowKey;
+            }
 
             const signalObj = await entryEngine(jwt, liveFrom, liveTo, futureToken);
 
             const signalType = signalObj?.signal ?? "NO_TRADE";
             const isNoTrade = signalType === "NO_TRADE";
 
-            logger.info(`🎯 SIGNAL: ${signalType}`);
-
-            if (!isNoTrade && signalType !== lastSignal) {
-                logger.info(`🚨 NEW SIGNAL: ${signalType}`);
-                logger.info(`   Entry : ${signalObj.entryPrice}`);
-                logger.info(`   SL    : ${signalObj.slPrice}  (${signalObj.slPoints} pts)`);
-                logger.info(`   TGT   : ${signalObj.tgtPrice}  (${signalObj.tgtPoints} pts)`);
-                logger.info(`   RR    : 1 : ${signalObj.riskReward}`);
-                lastSignal = signalType;
+            if (isNoTrade) {
+                _noTradeLogCount++;
+                if (lastSignal !== "NO_TRADE" || _noTradeLogCount % 20 === 1) {
+                    logger.info(`🎯 SIGNAL: NO_TRADE`);
+                }
+                lastSignal = "NO_TRADE";
+            } else {
+                _noTradeLogCount = 0;
+                if (signalType !== lastSignal) {
+                    logger.info(`🚨 NEW SIGNAL: ${signalType} | Entry:${signalObj.entryPrice} | SL:${signalObj.slPrice} | TGT:${signalObj.tgtPrice} | RR:${signalObj.riskReward}`);
+                    lastSignal = signalType;
+                }
             }
 
-            if (isNoTrade) lastSignal = null;
 
         } catch (err) {
             logger.error(`❌ Loop #${iteration} Error: ${err.message}`);

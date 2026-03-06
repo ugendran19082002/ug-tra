@@ -219,8 +219,8 @@ export function calculateOptionLevels({
     indexSL,
     indexTarget,
     optionLTP,
-    delta = 0.49,
-    gamma = 0.0007,
+    delta = 0.60,
+    gamma = 0.0005,
 }) {
     // 1️⃣ Index Moves
     const indexSLMove = Math.abs(indexSL - indexEntry);

@@ -63,6 +63,7 @@ function maybeDailyReset() {
 
 // ── Execution mutex — prevents duplicate orders if loop outruns signal reset ──
 let _tradeLock = false;
+let _iterationCount = 0;
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  ENTRY ENGINE (live)
@@ -75,11 +76,15 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
         return { signal: "NO_TRADE", reason: "execution_locked" };
     }
 
+    _iterationCount++;
+
     // ── Daily state reset at start of each new day ────────────────────────
     maybeDailyReset();
 
-    // ── Log position status ───────────────────────────────────────────────
-    logStatus();
+    // ── Log position status (Periodic if flat, every time if open) ─────────
+    if (isOpen() || _iterationCount % 20 === 1) {
+        logStatus();
+    }
 
     // ── Risk Engine check: don't run if daily limits hit ─────────────────
     const risk = canTrade();
@@ -141,9 +146,9 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
         return { signal: "NO_TRADE", reason: "missing data" };
     }
 
-    // ── Log latest candle being used for signal
+    // ── Combine candle and price data logging ─────────────────────────────
     const latest = future1m[future1m.length - 1];
-    logger.info(`📍 Signal Candle → Time:${latest.time} O:${latest.open} H:${latest.high} L:${latest.low} C:${latest.close} Vol:${latest.volume} OI:${latest.oi}`);
+    logger.debug(`📍 Candle [${latest.time}] O:${latest.open} H:${latest.high} L:${latest.low} C:${latest.close} V:${latest.volume} OI:${latest.oi}`);
 
     // ── Fall back to building 5m / 15m from 1m when API returns empty
     const index5m = (indexRaw5m && indexRaw5m.length) ? format(indexRaw5m) : buildTimeframe(index1m, 5);
@@ -177,11 +182,10 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
         r = generateSignal(index1m, index5m, index15m, future1m, data1D);
     }
 
-    logger.info(`📍 LTP → Index:${r.indexLTP}  Future:${r.futureLTP}  Spread:${r.spread}  Bias:${r.dailyBias}  Signal:${r.signal}`);
-    if (r.signal === "NO_TRADE") logger.debug(`   Reason: ${r.reason} | ADX:${r.currentADX} RSI:${r.currentRSI} ATR:${r.currentATR} | trend↑${r.trendUp} ↓${r.trendDown}`);
+    logger.info(`📍 LTP → Index:${r.indexLTP}  Fut:${r.futureLTP}  Spread:${r.spread}  Bias:${r.dailyBias}  Signal:${r.signal}`);
 
     if (r.signal === "NO_TRADE") {
-        logger.info(`⚪ NO TRADE | ${r.reason ?? "conditions not met"}`);
+        logger.debug(`   Reason: ${r.reason} | ADX:${r.currentADX} RSI:${r.currentRSI} ATR:${r.currentATR} | trend↑${r.trendUp} ↓${r.trendDown}`);
         return { signal: "NO_TRADE", reason: r.reason ?? "conditions not met" };
     }
 
@@ -246,7 +250,7 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
 
     // ── Telegram message
     const optionLine = optionToken
-        ? `\n━━━━━━━━━━━━━━━━━━\n🏷 Option Info\nSymbol      : ${optionSymbol}\nToken       : ${optionToken}\nATM Strike  : ${atmStrike}\nExpiry      : ${optionExpiry}\nOption LTP  : ${optionLTP ?? "N/A"}\nOption SL   : ${optionSL ?? "N/A"}\nOption TGT  : ${optionTarget ?? "N/A"}`
+        ? `\n━━━━━━━━━━━━━━━━━━\n🏷 Option Info\nSymbol      : ${optionSymbol}\nEntry LTP   : ${optionLTP ?? "N/A"}\nStop Loss   : ${optionSL ?? "N/A"}\nTarget      : ${optionTarget ?? "N/A"}\nATM Strike  : ${atmStrike}\nExpiry      : ${optionExpiry}`
         : "";
 
     const msg = isPE ? `
@@ -265,11 +269,9 @@ Spread      : ${r.spread}
 ━━━━━━━━━━━━━━━━━━
 🎯 Trade Levels
 Entry       : ${entryPrice}
-Stop Loss   : ${slPrice}  (${r.dynamicSL} pts ⬆)
-Target      : ${tgtPrice}  (${r.dynamicTGT} pts ⬇)
+Stop Loss   : ${slPrice} (${r.dynamicSL} pts ⬆)
+Target      : ${tgtPrice} (${r.dynamicTGT} pts ⬇)
 Risk:Reward : 1 : ${riskReward}
-Option SL   : ${optionSL ?? "N/A"}
-Option TGT  : ${optionTarget ?? "N/A"}
 ${optionLine}
 ━━━━━━━━━━━━━━━━━━
 📌 Conditions
@@ -279,8 +281,6 @@ RSI(14)     : ${r.currentRSI} ${r.rsiBearish ? "✅ < 45" : "❌"}
 ATR(14)     : ${r.currentATR}
 Trend Down  : ${r.trendDown}
 Big Candle  : ${r.bigCandle}
-Break Down  : ${r.breakDown}
-Break Below : ${r.breakBelow}
 Near Low    : ${r.closeNearLow}
 Volume OK   : ${r.volConfirm}
 ━━━━━━━━━━━━━━━━━━
@@ -300,11 +300,9 @@ Spread      : ${r.spread}
 ━━━━━━━━━━━━━━━━━━
 🎯 Trade Levels
 Entry       : ${entryPrice}
-Stop Loss   : ${slPrice}  (${r.dynamicSL} pts ⬇)
-Target      : ${tgtPrice}  (${r.dynamicTGT} pts ⬆)
+Stop Loss   : ${slPrice} (${r.dynamicSL} pts ⬇)
+Target      : ${tgtPrice} (${r.dynamicTGT} pts ⬆)
 Risk:Reward : 1 : ${riskReward}
-Option SL   : ${optionSL ?? "N/A"}
-Option TGT  : ${optionTarget ?? "N/A"}
 ${optionLine}
 ━━━━━━━━━━━━━━━━━━
 📌 Conditions
