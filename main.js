@@ -17,7 +17,7 @@ const USE_WEBSOCKET = process.env.USE_WEBSOCKET === "true";
 // AngelOne takes a few seconds to reflect the BUY in netqty — without this
 // guard, the poll fires in the same loop tick and sees netqty=0, immediately
 // false-closing the brand new position.
-const BROKER_SETTLE_MS = parseInt(process.env.BROKER_SETTLE_MS ?? "30000"); // default 30s
+const BROKER_SETTLE_MS = parseInt(process.env.BROKER_SETTLE_MS ?? "10000"); // default 30s
 
 // ─────────────────────────────────────────
 // MAIN
@@ -69,14 +69,14 @@ async function main() {
     let _exitLock = false;
     let _exitFired = false;
 
-    function safeExit(pnl, reason) {
+    function safeExit(pnl, reason, exitPrice = NaN) {
         if (_exitFired) {
             logger.warn(`⚠ safeExit: duplicate exit suppressed (reason: ${reason}) — trade already closed`);
             return;
         }
         _exitFired = true;
         _exitLock = false; // release in-flight lock before notifying
-        onTradeExit(pnl, reason);
+        onTradeExit(pnl, reason, exitPrice);
         _positionOpenedAt = null;
         logger.debug(`🔒 safeExit: fired [${reason}] | PnL:${pnl}`);
     }
@@ -110,18 +110,19 @@ async function main() {
                         ? (price >= pos.sl || price <= pos.target)
                         : (price <= pos.sl || price >= pos.target);
 
-                    const exited = await checkExitAndCleanup(jwt, pos.optionSymbol, {
+                    const status = await checkExitAndCleanup(jwt, pos.optionSymbol, {
                         currentIndexLTP: tickLtp,
                         indexSL: pos.sl,
                         indexTGT: pos.target,
                         isPE
                     });
 
-                    if (exited) {
+                    if (status && status.exited) {
                         const exitReason = indexTriggered ? "TGT/SL HIT (INDEX LTP)" : "BROKER SL/TGT FILLED";
                         const pnl = isPE ? pos.entry - price : price - pos.entry;
                         logger.info(`🚨 LIVE EXIT [${exitReason}]: ${pos.side} closed @ ${tickLtp}`);
-                        safeExit(pnl, exitReason); // ✅ single-exit guard
+                        const actualExitPrice = status.exitPrice && !isNaN(status.exitPrice) ? status.exitPrice : price;
+                        safeExit(pnl, exitReason, actualExitPrice); // ✅ single-exit guard
                     }
                 } catch (err) {
                     logger.error(`❌ Live Exit Error: ${err.message}`);
@@ -213,14 +214,21 @@ async function main() {
                     const pos = getPosition();
                     if (pos?.optionSymbol) {
                         try {
-                            const brokerPositions = await getPositions(jwt);
-                            const brokerPos = brokerPositions.find(
-                                p => p.tradingsymbol === pos.optionSymbol && parseInt(p.netqty) !== 0
-                            );
-                            if (!brokerPos) {
-                                await cleanupOrders(jwt, pos.optionSymbol);
+                            const status = await checkExitAndCleanup(jwt, pos.optionSymbol, { isPE: pos.side === "PE" });
+                            if (status && status.exited) {
                                 logger.info(`🔔 Polling detected BROKER EXIT for ${pos.optionSymbol} — resetting state`);
-                                safeExit(0, "BROKER SL/TGT FILLED (POLL)"); // ✅ single-exit guard
+                                // Fallback: if no filled order found in order book (e.g. all AMO cancelled),
+                                // use the option's stored entry LTP as a rough exit price rather than NaN.
+                                let exitPx = status.exitPrice;
+                                if (isNaN(exitPx) || exitPx === 0) {
+                                    exitPx = parseFloat(pos.optionEntry ?? NaN);
+                                    if (!isNaN(exitPx)) {
+                                        logger.warn(`⚠ Exit price not in order book — using optionEntry as fallback: ${exitPx}`);
+                                    } else {
+                                        logger.warn(`⚠ Exit price unavailable: no filled order found and no optionEntry stored`);
+                                    }
+                                }
+                                safeExit(0, "BROKER SL/TGT FILLED (POLL)", exitPx); // ✅ single-exit guard
                             }
                         } catch (err) {
                             logger.warn(`⚠ Broker exit poll error: ${err.message}`);

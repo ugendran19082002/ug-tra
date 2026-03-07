@@ -383,8 +383,8 @@ Volume OK   : ${r.volConfirm}
  * @param {number} pnl - index points, positive=profit negative=loss
  * @param {string} reason - "SL" | "TGT" | "EOD" | "MANUAL"
  */
-export function onTradeExit(pnl, reason = "UNKNOWN") {
-    closePosition(reason, NaN);
+export function onTradeExit(pnl, reason = "UNKNOWN", exitPrice = NaN) {
+    closePosition(reason, exitPrice);
     recordTrade(pnl);
     _tradeLock = false;   // ✅ Unlock: bot can accept a new entry now
     logger.info(`📊 Trade closed: ${reason} | PnL: ${pnl > 0 ? "+" : ""}${pnl}`);

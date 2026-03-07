@@ -5,234 +5,365 @@ import { logger } from "./logger.js";
 
 dotenv.config();
 
-const BASE_URL = process.env.ANGELONE_BASE_URL || "https://apiconnect.angelone.in";
+const BASE_URL = process.env.KOTAK_BASEURL;
 const LOT_SIZE = parseInt(process.env.LOT_SIZE ?? "20");
 
+function kotakHeaders() {
+    return {
+        accept: "application/json",
+        Auth: process.env.KOTAK_TOKEN,
+        Sid: process.env.KOTAK_SID,
+        "neo-fin-key": "neotradeapi",
+        "Content-Type": "application/x-www-form-urlencoded"
+    };
+}
+
+function jData(data) {
+    // Axios requires the payload to be properly URL-encoded when Content-Type is x-www-form-urlencoded
+    const params = new URLSearchParams();
+    params.append('jData', JSON.stringify(data));
+    return params.toString();
+}
+
+// Time check function to see if we are in market hours
+function isMarketOpen() {
+    const now = new Date();
+    // Assuming machine is in IST timezone.
+    const timeInMinutes = now.getHours() * 60 + now.getMinutes();
+
+    // 9:15 AM to 3:30 PM (555 to 930)
+    const marketStart = 9 * 60 + 15;
+    const marketEnd = 15 * 60 + 30;
+
+    return timeInMinutes >= marketStart && timeInMinutes <= marketEnd;
+}
+
 // ─────────────────────────────────────────────────────
-// PLACE REGULAR MKT ORDER (AngelOne)
+// HELPER: Extract executed/average price from a Kotak order object
+// Kotak uses inconsistent field names across API versions; try them all.
 // ─────────────────────────────────────────────────────
-async function placeRegularOrder(jwtToken, symbol, token, transactionType, qty = LOT_SIZE) {
+function extractExecPrice(order) {
+    // Common Kotak field names for average executed price
+    const candidates = [
+        order.avgExePrc,
+        order.avgPrc,
+        order.avgPr,
+        order.fillPrc,
+        order.flPr,      // fill price
+        order.prc,
+        order.pr,
+        order.trdPrc,
+        order.execPrc,
+        order.exePrc,
+    ];
+
+    for (const v of candidates) {
+        const n = parseFloat(v);
+        if (!isNaN(n) && n > 0) return n;
+    }
+
+    // Last resort: fill amount / fill quantity
+    const fillAmt = parseFloat(order.flAmt ?? order.fillAmt ?? order.trdVal);
+    const fillQty = parseFloat(order.flQty ?? order.fillQty ?? order.qt ?? order.qty);
+    if (!isNaN(fillAmt) && !isNaN(fillQty) && fillQty > 0) {
+        const computed = fillAmt / fillQty;
+        if (computed > 0) return computed;
+    }
+
+    return NaN;
+}
+
+// ─────────────────────────────────────────────────────
+// PLACE REGULAR MKT ORDER (Kotak)
+// ─────────────────────────────────────────────────────
+async function placeRegularOrder(jwtToken, symbol, token, transactionType, price = "0", qty = LOT_SIZE) {
     try {
+        const marketOpen = isMarketOpen();
+
         const body = {
-            variety: "NORMAL",
-            tradingsymbol: symbol,
-            symboltoken: String(token),
-            transactiontype: transactionType,
-            exchange: process.env.EXCHANGE_SEGMENT || "BFO",
-            ordertype: "MARKET",
-            producttype: "CARRYFORWARD",
-            duration: "DAY",
-            quantity: String(qty),
+            am: marketOpen ? "NO" : "YES",
+            dq: "0",
+            es: "bse_fo",
+            mp: "0",
+            pc: "NRML",
+            pf: "N",
+            pr: marketOpen ? "0" : String(price),
+            pt: marketOpen ? "MKT" : "L",
+            qt: String(qty),
+            rt: "DAY",
+            tp: "0",
+            ts: symbol,
+            tt: transactionType === "BUY" ? "B" : "S"
         };
 
         const res = await axios.post(
-            `${BASE_URL}/rest/secure/angelbroking/order/v1/placeOrder`,
-            body,
-            { headers: buildHeaders(jwtToken), timeout: 8000 }
+            `${BASE_URL}/quick/order/rule/ms/place`,
+            jData(body),
+            { headers: kotakHeaders(), timeout: 8000 }
         );
 
-        if (res.data?.status) {
-            logger.info(`🟢 AngelOne Entry Order Placed: ${JSON.stringify(res.data.data)}`);
-            return res.data.data.orderid;
+        if (res.data?.stat === "Ok" && res.data?.nOrdNo) {
+            logger.info(`🟢 Kotak Entry Order Placed: ${res.data.nOrdNo}`);
+            return res.data.nOrdNo;
         } else {
-            logger.error(`❌ AngelOne Entry Order Failed: ${res.data?.message}`);
+            logger.error(`❌ Kotak Entry Order Failed: ${JSON.stringify(res.data)}`);
             return null;
         }
+
     } catch (err) {
-        logger.error(`❌ AngelOne Entry Order Error: ${err.response?.data?.message || err.message}`);
+        const errorMsg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        logger.error(`❌ Kotak Entry Order Error: ${errorMsg}`);
         return null;
     }
 }
 
 // ─────────────────────────────────────────────────────
-// PLACE STOP LOSS ORDER (STOPLOSS_MARKET)
+// PLACE STOP LOSS ORDER (Kotak)
 // ─────────────────────────────────────────────────────
 async function placeStopLossOrder(jwtToken, symbol, token, triggerPrice, transactionType = "SELL", qty = LOT_SIZE) {
+
     try {
+        const marketOpen = isMarketOpen();
+
         const body = {
-            variety: "STOPLOSS",
-            tradingsymbol: symbol,
-            symboltoken: String(token),
-            transactiontype: transactionType,
-            exchange: "BFO",
-            ordertype: "STOPLOSS_MARKET",
-            producttype: "CARRYFORWARD",
-            duration: "DAY",
-            price: "0", // Triggered at market
-            triggerprice: String(triggerPrice),
-            quantity: String(qty),
+            am: marketOpen ? "NO" : "YES",
+            dq: "0",
+            es: "bse_fo",
+            mp: "0",
+            pc: "NRML",
+            pf: "N",
+            pr: "0",
+            pt: "SL",
+            qt: String(qty),
+            rt: "DAY",
+            tp: String(triggerPrice),
+            ts: symbol,
+            tt: transactionType === "SELL" ? "S" : "B"
         };
 
         const res = await axios.post(
-            `${BASE_URL}/rest/secure/angelbroking/order/v1/placeOrder`,
-            body,
-            { headers: buildHeaders(jwtToken), timeout: 8000 }
+            `${BASE_URL}/quick/order/rule/ms/place`,
+            jData(body),
+            { headers: kotakHeaders(), timeout: 8000 }
         );
 
-        if (res.data?.status) {
-            logger.info(`✅ AngelOne SL-M Order Placed: ${res.data.data.orderid}`);
-            return res.data.data.orderid;
+        if (res.data?.stat === "Ok" && res.data?.nOrdNo) {
+            logger.info(`✅ Kotak SL-M Order Placed: ${res.data.nOrdNo}`);
+            return res.data.nOrdNo;
         } else {
-            logger.error(`❌ AngelOne SL-M Failed: ${res.data?.message}`);
+            logger.error(`❌ Kotak SL-M Failed: ${JSON.stringify(res.data)}`);
             return null;
         }
+
     } catch (err) {
-        logger.error(`❌ AngelOne SL-M Error: ${JSON.stringify(err.response?.data || err.message)}`);
+        const errorMsg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        logger.error(`❌ Kotak SL-M Error: ${errorMsg}`);
         return null;
     }
 }
 
 // ─────────────────────────────────────────────────────
-// PLACE TARGET LIMIT ORDER
+// PLACE TARGET LIMIT ORDER (Kotak)
 // ─────────────────────────────────────────────────────
 async function placeLimitOrder(jwtToken, symbol, token, price, transactionType = "SELL", qty = LOT_SIZE) {
+
     try {
+        const marketOpen = isMarketOpen();
+
         const body = {
-            variety: "NORMAL",
-            tradingsymbol: symbol,
-            symboltoken: String(token),
-            transactiontype: transactionType,
-            exchange: "BFO",
-            ordertype: "LIMIT",
-            producttype: "CARRYFORWARD",
-            duration: "DAY",
-            price: String(price),
-            quantity: String(qty),
+            am: marketOpen ? "NO" : "YES",
+            dq: "0",
+            es: "bse_fo",
+            mp: "0",
+            pc: "NRML",
+            pf: "N",
+            pr: String(price),
+            pt: "L",
+            qt: String(qty),
+            rt: "DAY",
+            tp: "0",
+            ts: symbol,
+            tt: transactionType === "SELL" ? "S" : "B"
         };
 
         const res = await axios.post(
-            `${BASE_URL}/rest/secure/angelbroking/order/v1/placeOrder`,
-            body,
-            { headers: buildHeaders(jwtToken), timeout: 8000 }
+            `${BASE_URL}/quick/order/rule/ms/place`,
+            jData(body),
+            { headers: kotakHeaders(), timeout: 8000 }
         );
 
-        if (res.data?.status) {
-            logger.info(`✅ AngelOne Target Limit Placed: ${res.data.data.orderid}`);
-            return res.data.data.orderid;
+        if (res.data?.stat === "Ok" && res.data?.nOrdNo) {
+            logger.info(`✅ Kotak Target Limit Placed: ${res.data.nOrdNo}`);
+            return res.data.nOrdNo;
         } else {
-            logger.error(`❌ AngelOne Target Limit Failed: ${res.data?.message}`);
+            logger.error(`❌ Kotak Target Limit Failed: ${JSON.stringify(res.data)}`);
             return null;
         }
+
     } catch (err) {
-        logger.error(`❌ AngelOne Target Limit Error: ${JSON.stringify(err.response?.data || err.message)}`);
+        const errorMsg = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        logger.error(`❌ Kotak Target Limit Error: ${errorMsg}`);
         return null;
     }
 }
 
 // ─────────────────────────────────────────────────────
-// GET OPEN POSITIONS (AngelOne)
+// GET OPEN POSITIONS (Kotak)
 // ─────────────────────────────────────────────────────
 export async function getPositions(jwtToken) {
+
     try {
+
         const res = await axios.get(
-            `${BASE_URL}/rest/secure/angelbroking/order/v1/getPosition`,
-            { headers: buildHeaders(jwtToken), timeout: 8000 }
+            `${BASE_URL}/quick/user/positions`,
+            { headers: kotakHeaders(), timeout: 8000 }
         );
-        if (res.data?.status && res.data.data) {
-            return res.data.data;
-        }
-        return [];
+
+        return res.data?.data ?? [];
+
     } catch (err) {
-        logger.error(`❌ AngelOne GetPositions Error: ${JSON.stringify(err.response?.data || err.message)}`);
+
+        logger.error(`❌ Kotak GetPositions Error: ${err.message}`);
         return [];
     }
 }
 
 // ─────────────────────────────────────────────────────
-// GET ORDER BOOK (AngelOne)
+// GET ORDER BOOK (Kotak)
 // ─────────────────────────────────────────────────────
 async function getOrderBook(jwtToken) {
+
     try {
+
         const res = await axios.get(
-            `${BASE_URL}/rest/secure/angelbroking/order/v1/getOrderBook`,
-            { headers: buildHeaders(jwtToken), timeout: 8000 }
+            `${BASE_URL}/quick/user/orders`,
+            { headers: kotakHeaders(), timeout: 8000 }
         );
-        if (res.data?.status && res.data.data) {
-            return res.data.data;
-        }
-        return [];
+
+        return res.data?.data ?? [];
+
     } catch (err) {
-        logger.error(`❌ AngelOne GetOrderBook Error: ${JSON.stringify(err.response?.data || err.message)}`);
+
+        logger.error(`❌ Kotak GetOrderBook Error: ${err.message}`);
         return [];
     }
 }
 
 // ─────────────────────────────────────────────────────
-// CANCEL ORDER (AngelOne)
+// CANCEL ORDER (Kotak)
 // ─────────────────────────────────────────────────────
 async function cancelOrder(jwtToken, variety, orderId) {
+
     try {
-        const body = { variety, orderid: orderId };
-        const res = await axios.post(
-            `${BASE_URL}/rest/secure/angelbroking/order/v1/cancelOrder`,
-            body,
-            { headers: buildHeaders(jwtToken) }
-        );
-        if (res.data?.status) {
-            logger.info(`✅ AngelOne Order Cancelled: ${orderId}`);
-            return true;
-        }
-        logger.error(`❌ AngelOne Order Cancel Failed: ${res.data?.message}`);
-        return false;
-    } catch (err) {
-        logger.error(`❌ AngelOne Order Cancel Error: ${JSON.stringify(err.response?.data || err.message)}`);
-        return false;
-    }
-}
+        const marketOpen = isMarketOpen();
 
-// ─────────────────────────────────────────────────────
-// MARKET EXIT POSITION (AngelOne)
-// ─────────────────────────────────────────────────────
-export async function marketExit(jwtToken, symbol) {
-    try {
-        const positions = await getPositions(jwtToken);
-        const p = positions.find(pos => pos.tradingsymbol === symbol && parseInt(pos.netqty) !== 0);
-
-        if (!p) {
-            logger.warn(`⚠ marketExit: No active position found for ${symbol} — performing cleanup only`);
-            await cleanupOrders(jwtToken, symbol);
-            return false;
-        }
-
-        const qty = Math.abs(parseInt(p.netqty));
-        const side = parseInt(p.netqty) > 0 ? "SELL" : "BUY";
-
-        logger.info(`🚨 SENSEX INDEX EXIT TRIGGERED: Exiting ${symbol} Qty:${qty} Side:${side}`);
-        await sleep(500); // Delay before position check
 
         const body = {
-            variety: "NORMAL",
-            tradingsymbol: symbol,
-            symboltoken: p.symboltoken,
-            transactiontype: side,
-            exchange: p.exchange,
-            ordertype: "MARKET",
-            producttype: p.producttype,
-            duration: "DAY",
-            quantity: String(qty),
+            on: orderId,
+            am: marketOpen ? "NO" : "YES",
         };
 
         const res = await axios.post(
-            `${BASE_URL}/rest/secure/angelbroking/order/v1/placeOrder`,
-            body,
-            { headers: buildHeaders(jwtToken) }
+            `${BASE_URL}/quick/order/cancel`,
+            jData(body),
+            { headers: kotakHeaders() }
         );
 
-        if (res.data?.status) {
-            logger.info(`✅ AngelOne Market Exit Placed: ${res.data.data.orderid}`);
-            // Always cleanup hanging orders after exit
-            await cleanupOrders(jwtToken, symbol);
-            return true;
-        } else {
-            logger.error(`❌ AngelOne Market Exit Failed: ${res.data?.message}`);
+        logger.info(`✅ Kotak Order Cancelled: ${orderId}`);
+        return true;
+
+    } catch (err) {
+        if (err.response?.status === 400) {
+            // Silently return false without logging. Kotak often locks AMO orders off-hours
+            // resulting in un-cancellable 400 errors. Logging them spams the console.
             return false;
         }
-    } catch (err) {
-        logger.error(`❌ AngelOne Market Exit Error: ${JSON.stringify(err.response?.data || err.message)}`);
+        logger.error(`❌ Kotak Order Cancel Error: ${err.message}`);
         return false;
     }
 }
 
+// ─────────────────────────────────────────────────────
+// MARKET EXIT POSITION (Kotak)
+// ─────────────────────────────────────────────────────
+export async function marketExit(jwtToken, symbol) {
+
+    try {
+
+        const positions = await getPositions(jwtToken);
+
+        const p = positions.find(pos => pos.trdSym === symbol && parseInt(pos.qty) !== 0);
+
+        if (!p) {
+            logger.warn(`⚠ marketExit: No active position found`);
+            await cleanupOrders(jwtToken, symbol);
+            return false;
+        }
+
+        const qty = Math.abs(parseInt(p.qty));
+        const marketOpen = isMarketOpen();
+
+        const body = {
+            am: marketOpen ? "NO" : "YES",
+            dq: "0",
+            es: p.exSeg || "bse_fo",
+            mp: "0",
+            pc: p.prod || "NRML",
+            pf: "N",
+            pr: "0",
+            pt: "MKT", // Kotak exit orders can often be MKT if limit price is unknown
+            qt: String(qty),
+            rt: "DAY",
+            tp: "0",
+            ts: symbol,
+            tt: parseInt(p.qty) > 0 ? "S" : "B"
+        };
+
+        const res = await axios.post(
+            `${BASE_URL}/quick/order/rule/ms/place`,
+            jData(body),
+            { headers: kotakHeaders() }
+        );
+
+        if (res.data?.stat === "Ok" && res.data?.nOrdNo) {
+            logger.info(`✅ Kotak Market Exit Placed: ${res.data.nOrdNo}`);
+            await cleanupOrders(jwtToken, symbol);
+            return true;
+        }
+
+        return false;
+
+    } catch (err) {
+
+        logger.error(`❌ Kotak Market Exit Error: ${err.message}`);
+        return false;
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// CLEANUP PENDING ORDERS
+// ─────────────────────────────────────────────────────
+export async function cleanupOrders(jwtToken, symbol) {
+
+    const orders = await getOrderBook(jwtToken);
+
+    const pendingOrders = orders.filter(o =>
+        o.trdSym === symbol &&
+        // o.tt === "S" && // Only clean up pending SELL orders (SL & Targets)
+        ["open", "pending", "trigger pending", "after market order req received"].includes(String(o.ordSt).toLowerCase())
+    );
+
+    if (pendingOrders.length > 0) {
+
+        logger.info(`🧹 Cleaning ${pendingOrders.length} pending orders`);
+
+        for (const o of pendingOrders) {
+            logger.debug(`Cancelling order ${o.nOrdNo}...`); // Downgraded to debug to reduce spam
+            await cancelOrder(jwtToken, "NORMAL", o.nOrdNo);
+            await sleep(800);
+        }
+    }
+}
 // ─────────────────────────────────────────────────────
 // CHECK IF POSITION CLOSED AND CLEANUP ORDERS
 // ─────────────────────────────────────────────────────
@@ -257,54 +388,73 @@ export async function checkExitAndCleanup(jwtToken, symbol, params = {}) {
 
         if (triggered) {
             logger.info(`🎯 Index Level Hit (LTP:${price} SL:${indexSL} TGT:${indexTGT}) — Triggering Market Exit`);
-            const exited = await marketExit(jwtToken, symbol);
-            return exited;
+            await marketExit(jwtToken, symbol);
+
+            let finalExitPrice = NaN;
+            try {
+                const orders = await getOrderBook(jwtToken);
+                // Filter all orders for this symbol (any side — SL-M exit could show as BUY or SELL depending on direction)
+                const symOrders = orders.filter(o => o.trdSym === symbol);
+                const FILLED_STATUSES = ["traded", "complete", "filled", "executed", "f", "s"];
+                const ex = symOrders.find(o =>
+                    FILLED_STATUSES.includes(String(o.ordSt).toLowerCase()) &&
+                    (o.tt === "S" || o.tt === "s")  // must be a SELL to close long position
+                );
+
+                if (ex) {
+                    finalExitPrice = extractExecPrice(ex);
+                    if (isNaN(finalExitPrice) || finalExitPrice === 0) {
+                        logger.warn(`⚠ (Index triggered) Found executed order but exit price was 0 or NaN. Order dump: ${JSON.stringify(ex)}`);
+                    }
+                } else {
+                    // Log ALL symbol orders so we can see what statuses/fields Kotak is actually sending
+                    // logger.warn(`⚠ (Index triggered) No filled SELL order found for ${symbol}. All orders for symbol: ${JSON.stringify(symOrders.map(o => ({ ordSt: o.ordSt, tt: o.tt, avgExePrc: o.avgExePrc, avgPrc: o.avgPrc, flPr: o.flPr, prc: o.prc })))}`);
+                }
+            } catch (e) {
+                logger.error(`❌ Error fetching orderbook for index-triggered exit price extraction: ${e.message}`);
+            }
+
+            return { exited: true, exitPrice: finalExitPrice };
         }
     }
 
     // 2. Check current positions (if option-level SL/TGT was hit instead)
     const positions = await getPositions(jwtToken);
-    const existing = positions.find(p => p.tradingsymbol === symbol && parseInt(p.netqty) !== 0);
+    const existing = positions.find(p => p.trdSym === symbol && parseInt(p.qty) !== 0);
 
     // If netqty is 0 (or position doesn't exist), broker's SL-M or Target order has already filled.
     // Return true so the caller (handleLiveExit / polling loop) triggers onTradeExit() correctly.
     if (!existing) {
+        let finalExitPrice = NaN;
+        try {
+            const orders = await getOrderBook(jwtToken);
+            const symOrders = orders.filter(o => o.trdSym === symbol);
+            const FILLED_STATUSES = ["traded", "complete", "filled", "executed", "f", "s"];
+            const ex = symOrders.find(o =>
+                FILLED_STATUSES.includes(String(o.ordSt).toLowerCase()) &&
+                (o.tt === "S" || o.tt === "s")  // SELL to close long
+            );
+
+            if (ex) {
+                finalExitPrice = extractExecPrice(ex);
+                if (isNaN(finalExitPrice) || finalExitPrice === 0) {
+                    logger.warn(`⚠ Found executed order but exit price was 0 or NaN. Order dump: ${JSON.stringify(ex)}`);
+                }
+            } else {
+                // Log all orders for this symbol so we can see what statuses/fields Kotak sends
+                // logger.warn(`⚠ No filled SELL order found for ${symbol}. All orders for symbol: ${JSON.stringify(symOrders.map(o => ({ ordSt: o.ordSt, tt: o.tt, avgExePrc: o.avgExePrc, avgPrc: o.avgPrc, flPr: o.flPr, prc: o.prc })))}`);
+            }
+        } catch (e) {
+            logger.error(`❌ Error fetching orderbook for exit price extraction: ${e.message}`);
+        }
+
         await cleanupOrders(jwtToken, symbol);
-        return true;   // ✅ FIX: broker exit detected → triggers onTradeExit → unlocks _tradeLock
+        return { exited: true, exitPrice: finalExitPrice };   // ✅ FIX: broker exit detected → triggers onTradeExit → unlocks _tradeLock
     }
 
     return false;
 }
 
-// ─────────────────────────────────────────────────────
-// CLEANUP PENDING ORDERS FOR SYMBOL
-// ─────────────────────────────────────────────────────
-export async function cleanupOrders(jwtToken, symbol) {
-    const orders = await getOrderBook(jwtToken);
-    const pendingOrders = orders.filter(o =>
-        o.tradingsymbol === symbol &&
-        ["open", "pending", "trigger pending"].includes(String(o.status).toLowerCase())
-    );
-
-    if (pendingOrders.length > 0) {
-        logger.info(`🧹 Cleaning up ${pendingOrders.length} pending orders for ${symbol}`);
-        for (const o of pendingOrders) {
-
-            let variety = String(o.variety || "NORMAL").toUpperCase();
-            if (variety.includes("AMO")) {
-                variety = "NORMAL";
-            }
-            if (String(o.ordertype).toUpperCase().includes("STOPLOSS")) {
-                variety = "STOPLOSS";
-            }
-
-            logger.info(`   - Cancelling order ${o.orderid} (Variety: ${variety})`);
-            await cancelOrder(jwtToken, variety, o.orderid);
-            await sleep(800); // 800ms gap to avoid rate limits
-
-        }
-    }
-}
 
 export async function executeOrder(jwt, signal) {
     const { signal: type, optionToken, optionSymbol, optionLTP } = signal;
@@ -322,10 +472,10 @@ export async function executeOrder(jwt, signal) {
 
     // ── Check if already in a position for this symbol
     const positions = await getPositions(jwt);
-    const existing = positions.find(p => p.tradingsymbol === symbol && parseInt(p.netqty) !== 0);
+    const existing = positions.find(p => p.trdSym === symbol && parseInt(p.qty) !== 0);
 
     if (existing) {
-        logger.warn(`⚠ executeOrder: Already in position for ${symbol} (Qty: ${existing.netqty}) — skipping entry`);
+        logger.warn(`⚠ executeOrder: Already in position for ${symbol} (Qty: ${existing.qty}) — skipping entry`);
         return;
     }
 
@@ -342,10 +492,13 @@ export async function executeOrder(jwt, signal) {
     const transactionType = "BUY";
     const exitType = "SELL";  // exit long position
 
+    // Kotak rejects MKT orders off-hours. Calculate a limit buffer price just in case:
+    const limitPrice = parseFloat((optionLTP * 1.01).toFixed(1));
+
     // 1️⃣ Place entry BUY
-    const orderNo = await placeRegularOrder(jwt, symbol, optionToken, transactionType, LOT_SIZE);
+    const orderNo = await placeRegularOrder(jwt, symbol, optionToken, transactionType, limitPrice, LOT_SIZE);
     if (!orderNo) {
-        logger.error("❌ AngelOne Entry order failed — skipping SL/TGT creation");
+        logger.error("❌ Kotak Entry order failed — skipping SL/TGT creation");
         return;
     }
 

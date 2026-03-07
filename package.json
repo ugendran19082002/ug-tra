@@ -18,6 +18,8 @@
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "ioredis": "^5.10.0",
+    "kotak-neo-nodejs-sdk": "^1.0.15",
+    "otplib": "^12.0.1",
     "public-ip": "^8.0.0",
     "smartapi-javascript": "^1.0.27",
     "speakeasy": "^2.0.0",
