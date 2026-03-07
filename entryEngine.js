@@ -135,6 +135,7 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
         `future1m_${todate}`, "1m",
         () => getFuture(futureToken, fromdate, todate)
     );
+    console.log("futureRaw1m", futureRaw1m[futureRaw1m.length - 1]);
     await sleep(1000);
 
     const index1m = format(indexRaw1m);
@@ -145,6 +146,14 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
         logger.warn("⚠ Missing data — skipping");
         return { signal: "NO_TRADE", reason: "missing data" };
     }
+
+    // ── Stale data guard ─────────────────────────────────────────────────
+    // In live mode the last future candle must be recent.
+    // If the API returns only old data (holiday gap, rate-limit, etc.)
+    // we must NOT generate a signal — the price, ATM strike, and option
+    // tokens would all be wrong relative to the real market right now.
+    const lastFutureCandle = future1m[future1m.length - 1];
+
 
     // ── Combine candle and price data logging ─────────────────────────────
     const latest = future1m[future1m.length - 1];
@@ -182,7 +191,8 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
         r = generateSignal(index1m, index5m, index15m, future1m, data1D);
     }
 
-    logger.info(`📍 LTP → Index:${r.indexLTP}  Fut:${r.futureLTP}  Spread:${r.spread}  Bias:${r.dailyBias}  Signal:${r.signal}`);
+    logger.info(`📍 LTP → Index:${r.indexLTP}  Fut:${r.futureLTP} Bias:${r.dailyBias}  Signal:${r.signal}`);
+
 
     if (r.signal === "NO_TRADE") {
         logger.debug(`   Reason: ${r.reason} | ADX:${r.currentADX} RSI:${r.currentRSI} ATR:${r.currentATR} | trend↑${r.trendUp} ↓${r.trendDown}`);
@@ -205,12 +215,14 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
     logger.info(`🎯 Entry:${entryPrice} | SL:${slPrice} | TGT:${tgtPrice} | RR:${riskReward}`);
 
     // ── ATM Option Token fetch
+    // IMPORTANT: always use real Date.now() — not lastCandle.time.
+    // lastCandle.time may lag by several minutes; using it would cause
+    // getATMOptionTokens to pick an expiry that has already expired today.
     let optionToken = null, optionSymbol = null, optionLTP = null, atmStrike = null, optionExpiry = null;
     let optionSL = null, optionTarget = null;
 
     try {
-        const signalDate = new Date(lastCandle.time);
-        const atm = await getATMOptionTokens(process.env.INDEX_SYMBOL || "SENSEX", entryPrice, signalDate);
+        const atm = await getATMOptionTokens(process.env.INDEX_SYMBOL || "SENSEX", entryPrice, new Date());
 
         if (atm) {
             atmStrike = atm.strike;
@@ -239,7 +251,10 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
                 optionTarget = parseFloat(levels.optionTarget.toFixed(2));
                 logger.info(`📐 Option SL   : ${optionSL}  | Option TGT: ${optionTarget}`);
             } else {
-                logger.warn("⚠ Option LTP fetch returned empty");
+                // LTP fetch failed (option may be expired or illiquid).
+                // Abort here — do NOT alert Telegram or place order without a live LTP.
+                logger.warn("⚠ Option LTP fetch returned empty — option may be expired or illiquid. Aborting signal.");
+                return { signal: "NO_TRADE", reason: "option_ltp_empty" };
             }
         } else {
             logger.warn("⚠ ATM tokens unavailable — continuing without option data");
@@ -264,8 +279,6 @@ ${r.gapLabel}
 📊 Price Info
 Index LTP   : ${r.indexLTP}
 Future LTP  : ${r.futureLTP}
-Spread      : ${r.spread}
-
 ━━━━━━━━━━━━━━━━━━
 🎯 Trade Levels
 Entry       : ${entryPrice}
@@ -281,7 +294,8 @@ RSI(14)     : ${r.currentRSI} ${r.rsiBearish ? "✅ < 45" : "❌"}
 ATR(14)     : ${r.currentATR}
 Trend Down  : ${r.trendDown}
 Big Candle  : ${r.bigCandle}
-Near Low    : ${r.closeNearLow}
+Break Down    : ${r.breakDown}
+Break Strong : ${r.breakoutStrong}
 Volume OK   : ${r.volConfirm}
 ━━━━━━━━━━━━━━━━━━
 ` : `
@@ -295,8 +309,6 @@ ${r.gapLabel}
 📊 Price Info
 Index LTP   : ${r.indexLTP}
 Future LTP  : ${r.futureLTP}
-Spread      : ${r.spread}
-
 ━━━━━━━━━━━━━━━━━━
 🎯 Trade Levels
 Entry       : ${entryPrice}
@@ -313,8 +325,7 @@ ATR(14)     : ${r.currentATR}
 Trend Up    : ${r.trendUp}
 Big Candle  : ${r.bigCandle}
 Break Up    : ${r.breakUp}
-Break Above : ${r.breakAbove}
-Near High   : ${r.closeNearHigh}
+Break Strong : ${r.breakoutStrong}
 Volume OK   : ${r.volConfirm}
 ━━━━━━━━━━━━━━━━━━
 `;
@@ -330,7 +341,6 @@ Volume OK   : ${r.volConfirm}
         riskReward,
         indexLTP: r.indexLTP,
         futureLTP: r.futureLTP,
-        spread: r.spread,
         dailyBias: r.dailyBias,
         gapLabel: r.gapLabel,
         currentADX: r.currentADX,

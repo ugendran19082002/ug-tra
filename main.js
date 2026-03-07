@@ -2,16 +2,22 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { logger, getISTTime } from "./logger.js";
-import { sleep, getTodayFromDate, formatCurrentDateTime } from "./helpers.js";
+import { sleep, getTodayFromDate, formatISTDateTime } from "./helpers.js";
 import { login, clearTokenCache, getFeedToken } from "./api/auth.js";
 import { getFutureToken } from "./api/tokens.js";
 import { entryEngine, onTradeExit } from "./entryEngine.js";
 import { backtest } from "./backtest.js";
 import { startFeed, stopFeed, isFeedConnected } from "./wsMarketFeed.js";
 import { isOpen, getPosition } from "./positionManager.js";
-import { checkExitAndCleanup } from "./order.js";
+import { checkExitAndCleanup, getPositions, cleanupOrders } from "./order.js";
 
 const USE_WEBSOCKET = process.env.USE_WEBSOCKET === "true";
+
+// How long to wait after opening a position before polling broker for exit.
+// AngelOne takes a few seconds to reflect the BUY in netqty — without this
+// guard, the poll fires in the same loop tick and sees netqty=0, immediately
+// false-closing the brand new position.
+const BROKER_SETTLE_MS = parseInt(process.env.BROKER_SETTLE_MS ?? "30000"); // default 30s
 
 // ─────────────────────────────────────────
 // MAIN
@@ -24,10 +30,7 @@ async function main() {
         logger.info("🧪 BACKTEST MODE");
 
         const btFrom = getTodayFromDate(29);
-        console.log("btFrom", btFrom);
-        const btTo = formatCurrentDateTime();
-        // const btTo = "2026-01-29 15:29";
-        console.log("btTo", btTo);
+        const btTo = formatISTDateTime();
         logger.info(`📅 Window: ${btFrom} → ${btTo}`);
 
         const jwt = await login();
@@ -53,20 +56,46 @@ async function main() {
     let _lastWindowLog = null;
     let _noTradeLogCount = 0;
 
+    // Tracks when the last position was opened (ms timestamp).
+    // Used to skip broker-exit polling during the settling window.
+    let _positionOpenedAt = null;
+
+    // ── Single-exit guard ────────────────────────────────────────────────
+    // Prevents both WebSocket handler AND REST poll from calling
+    // onTradeExit() for the same trade (double dailyTrades count).
+    // _exitLock  : true while an exit is being processed (async in-flight)
+    // _exitFired : true once onTradeExit() has been called for this trade
+    //              Reset to false only when a NEW position opens.
+    let _exitLock = false;
+    let _exitFired = false;
+
+    function safeExit(pnl, reason) {
+        if (_exitFired) {
+            logger.warn(`⚠ safeExit: duplicate exit suppressed (reason: ${reason}) — trade already closed`);
+            return;
+        }
+        _exitFired = true;
+        _exitLock = false; // release in-flight lock before notifying
+        onTradeExit(pnl, reason);
+        _positionOpenedAt = null;
+        logger.debug(`🔒 safeExit: fired [${reason}] | PnL:${pnl}`);
+    }
+
     // ── WebSocket mode ───────────────────────────────────────────────────
     if (USE_WEBSOCKET) {
         logger.info("🔌 Starting WebSocket feed...");
         try {
             const jwt = await login();
             const futureToken = await getFutureToken(process.env.INDEX_SYMBOL || "SENSEX");
-
-            // feedToken is persisted in jwt_cache.json alongside the JWT string
             const feedToken = getFeedToken() || process.env.FEED_TOKEN || "";
 
-            let _exitLock = false; // Lock to prevent overlapping exit checks
-
             async function handleLiveExit(jwt, tickLtp) {
-                if (_exitLock || !isOpen()) return;
+                // _exitLock  : prevents concurrent WS ticks from double-processing
+                // _exitFired : prevents WS + REST poll both calling onTradeExit()
+                if (_exitLock || _exitFired || !isOpen()) return;
+
+                // Skip exit monitoring during settling window after a new entry
+                if (_positionOpenedAt && (Date.now() - _positionOpenedAt < BROKER_SETTLE_MS)) return;
 
                 const pos = getPosition();
                 if (!pos || pos.side === "NO_TRADE") return;
@@ -74,20 +103,25 @@ async function main() {
                 _exitLock = true;
 
                 try {
+                    const price = parseFloat(tickLtp);
+                    const isPE = pos.side === "PE";
+
+                    const indexTriggered = isPE
+                        ? (price >= pos.sl || price <= pos.target)
+                        : (price <= pos.sl || price >= pos.target);
+
                     const exited = await checkExitAndCleanup(jwt, pos.optionSymbol, {
                         currentIndexLTP: tickLtp,
                         indexSL: pos.sl,
                         indexTGT: pos.target,
-                        isPE: pos.side === "PE"
+                        isPE
                     });
 
                     if (exited) {
-                        logger.info(`🚨 LIVE EXIT: ${pos.side} closed by WebSocket Index hit @ ${tickLtp}`);
-                        // Compute local PnL for logging
-                        const pnl = pos.side === "PE"
-                            ? pos.entry - tickLtp
-                            : tickLtp - pos.entry;
-                        onTradeExit(pnl, "TGT/SL HIT (LTP)");
+                        const exitReason = indexTriggered ? "TGT/SL HIT (INDEX LTP)" : "BROKER SL/TGT FILLED";
+                        const pnl = isPE ? pos.entry - price : price - pos.entry;
+                        logger.info(`🚨 LIVE EXIT [${exitReason}]: ${pos.side} closed @ ${tickLtp}`);
+                        safeExit(pnl, exitReason); // ✅ single-exit guard
                     }
                 } catch (err) {
                     logger.error(`❌ Live Exit Error: ${err.message}`);
@@ -97,11 +131,9 @@ async function main() {
             }
 
             startFeed(jwt, feedToken, futureToken, async (tick) => {
-                // Periodically log heartbeat 
                 if (Math.random() < 0.05) {
                     logger.info(`📡 WS Heartbeat → LTP:${tick.ltp} Vol:${tick.volume} OI:${tick.oi}`);
                 }
-                // Continuous Exit Monitoring
                 await handleLiveExit(jwt, tick.ltp);
             });
 
@@ -121,11 +153,14 @@ async function main() {
             const jwt = await login(forceLogin);
             forceLogin = false;
 
+            // ✅ Use formatISTDateTime() — always returns real IST time.
+            // The old formatCurrentDateTime() used getHours() which is LOCAL time
+            // (UTC on most servers), making todate 5:30h behind — API returns no data.
             const liveFrom = getTodayFromDate(29);
-            const liveTo = formatCurrentDateTime();
+            // const liveTo = formatISTDateTime();
             // const liveTo = process.env.LIVE_TO_DATE || formatCurrentDateTime();
-            // const liveTo = "2026-03-02 10:11";
-            const futureToken = await getFutureToken(process.env.INDEX_SYMBOL || "SENSEX");
+            const liveTo = "2026-03-06 14:42";
+            const futureToken = await getFutureToken(process.env.INDEX_SYMBOL || "SENSEX", liveTo);
 
             const windowKey = `${liveFrom}_${liveTo}`;
             if (windowKey !== _lastWindowLog) {
@@ -134,6 +169,14 @@ async function main() {
             }
 
             const signalObj = await entryEngine(jwt, liveFrom, liveTo, futureToken);
+
+            // If entryEngine returned a live signal (not NO_TRADE), a position was
+            // just opened — record the timestamp so the broker poll skips this window.
+            if (signalObj?.signal && signalObj.signal !== "NO_TRADE") {
+                _positionOpenedAt = Date.now();
+                _exitFired = false; // ✅ reset guard — new trade, fresh exit slot
+                logger.debug(`📍 Position opened — broker poll paused for ${BROKER_SETTLE_MS / 1000}s settling`);
+            }
 
             const signalType = signalObj?.signal ?? "NO_TRADE";
             const isNoTrade = signalType === "NO_TRADE";
@@ -152,6 +195,42 @@ async function main() {
                 }
             }
 
+            // ── Broker exit safety net ─────────────────────────────────────────
+            // Detects when broker's own SL-M or Target order has filled, so we can
+            // reset positionManager and allow the next entry.
+            //
+            // ⚠ CRITICAL: skip during BROKER_SETTLE_MS after opening.
+            // The BUY order takes a few seconds to reflect in AngelOne's netqty.
+            // Without this guard, the poll sees netqty=0 immediately after entry
+            // and false-closes the position before it even starts monitoring.
+            const positionJustOpened = _positionOpenedAt && (Date.now() - _positionOpenedAt < BROKER_SETTLE_MS);
+
+            if (isOpen() && !positionJustOpened) {
+                // ✅ Skip REST poll if WebSocket is already processing an exit
+                if (_exitLock || _exitFired) {
+                    logger.debug("⏭ REST poll skipped — WS exit already in progress or fired");
+                } else {
+                    const pos = getPosition();
+                    if (pos?.optionSymbol) {
+                        try {
+                            const brokerPositions = await getPositions(jwt);
+                            const brokerPos = brokerPositions.find(
+                                p => p.tradingsymbol === pos.optionSymbol && parseInt(p.netqty) !== 0
+                            );
+                            if (!brokerPos) {
+                                await cleanupOrders(jwt, pos.optionSymbol);
+                                logger.info(`🔔 Polling detected BROKER EXIT for ${pos.optionSymbol} — resetting state`);
+                                safeExit(0, "BROKER SL/TGT FILLED (POLL)"); // ✅ single-exit guard
+                            }
+                        } catch (err) {
+                            logger.warn(`⚠ Broker exit poll error: ${err.message}`);
+                        }
+                    }
+                }
+            } else if (positionJustOpened) {
+                const elapsed = ((Date.now() - _positionOpenedAt) / 1000).toFixed(0);
+                logger.debug(`⏳ Broker poll skipped — settling (${elapsed}s / ${BROKER_SETTLE_MS / 1000}s)`);
+            }
 
         } catch (err) {
             logger.error(`❌ Loop #${iteration} Error: ${err.message}`);
@@ -162,7 +241,7 @@ async function main() {
             }
         }
 
-        await sleep(15_000);
+        await sleep(3_000);
     }
 }
 

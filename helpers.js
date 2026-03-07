@@ -124,14 +124,15 @@ export function formatDateTime() {
 //         `${p(now.getHours())}:${p(now.getMinutes())}`;
 // }
 
+// ✅ FIXED: always use IST (Asia/Kolkata) for the todate window.
+// The old version used getHours()/getDate() which is LOCAL/UTC time on most servers.
+// On a UTC server at 10:48 IST, getHours() = 5 and the date could appear as yesterday,
+// causing the AngelOne API to return no data or stale candles.
 export function formatCurrentDateTime() {
-    const now = new Date();
-
-    // Remove seconds & milliseconds
+    const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
     now.setSeconds(0, 0);
 
     const p = n => String(n).padStart(2, "0");
-
     return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ` +
         `${p(now.getHours())}:${p(now.getMinutes())}`;
 }
@@ -140,7 +141,8 @@ export function formatCurrentDateTime() {
 // ─────────────────────────────────────────
 export function getTodayFromDate(daysBack = 30) {
     const p = n => String(n).padStart(2, "0");
-    const d = new Date();
+    // Use IST date so daysBack is calculated from the real IST calendar day
+    const d = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
     d.setDate(d.getDate() - daysBack);
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} 09:15`;
 }
@@ -219,7 +221,7 @@ export function calculateOptionLevels({
     indexSL,
     indexTarget,
     optionLTP,
-    delta = 0.60,
+    delta = 0.80,
     gamma = 0.0005,
 }) {
     // 1️⃣ Index Moves

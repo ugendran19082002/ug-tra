@@ -141,6 +141,7 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     const endBar = alignedIndex.length - 1;
     const trades = [];
     let openTrade = null;
+    let lastExitBar = -1; // ✅ FIX #3 — prevent same-bar re-entry after exit
 
     // Suppress debug logs during backtest loop
     const origLevel = logger.level;
@@ -160,18 +161,46 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
         const currentClose = index1m[index1m.length - 1].close;
 
         // ── Trade exit check
+        // ✅ FIX #2 — Intrabar SL/TGT resolution using bar High/Low
+        // Checks whether SL or TGT was touched within this bar's range,
+        // not just the closing price. Priority: SL first (conservative).
         if (openTrade) {
+            const bar = alignedIndex[i];
+            const barHigh = bar.high;
+            const barLow = bar.low;
             let exitReason = null;
             let exitPrice = currentClose;
 
             if (openTrade.type === "CE") {
-                if (currentClose <= openTrade.sl) { exitReason = "SL"; exitPrice = openTrade.sl; }
-                if (currentClose >= openTrade.tgt) { exitReason = "TGT"; exitPrice = openTrade.tgt; }
+                // CE: SL is below entry, TGT is above entry
+                const slHit = barLow <= openTrade.sl;
+                const tgtHit = barHigh >= openTrade.tgt;
+
+                if (slHit && tgtHit) {
+                    // Both inside same candle — conservative: take SL
+                    // (cannot know which was hit first without tick data)
+                    exitReason = "SL"; exitPrice = openTrade.sl;
+                } else if (slHit) {
+                    exitReason = "SL"; exitPrice = openTrade.sl;
+                } else if (tgtHit) {
+                    exitReason = "TGT"; exitPrice = openTrade.tgt;
+                }
             } else {
-                if (currentClose >= openTrade.sl) { exitReason = "SL"; exitPrice = openTrade.sl; }
-                if (currentClose <= openTrade.tgt) { exitReason = "TGT"; exitPrice = openTrade.tgt; }
+                // PE: SL is above entry, TGT is below entry
+                const slHit = barHigh >= openTrade.sl;
+                const tgtHit = barLow <= openTrade.tgt;
+
+                if (slHit && tgtHit) {
+                    // Both inside same candle — conservative: take SL
+                    exitReason = "SL"; exitPrice = openTrade.sl;
+                } else if (slHit) {
+                    exitReason = "SL"; exitPrice = openTrade.sl;
+                } else if (tgtHit) {
+                    exitReason = "TGT"; exitPrice = openTrade.tgt;
+                }
             }
 
+            // EOD exit: 15:29 IST — only if not already exited above
             const ist = new Date(new Date(currentTime).toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
             if ((ist.getHours() === 15 && ist.getMinutes() >= 29) && !exitReason) {
                 exitReason = "EOD";
@@ -211,12 +240,17 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
                     `PnL  : ${pnl >= 0 ? "+" : ""}${trade.pnl.toFixed(2)}`
                 );
 
+                lastExitBar = i; // ✅ FIX #3 — record the bar we exited on
                 openTrade = null;
             }
         }
 
         // ── Trade entry check
-        if (!openTrade) {
+        // ✅ FIX #1 — Next-bar open entry
+        // Signal fires at bar[i] close. We enter at bar[i+1] open.
+        // So we DETECT signals at bar i but STORE them for entry on bar i+1.
+        // ✅ FIX #3 — Skip entry if we just exited this same bar (lastExitBar === i)
+        if (!openTrade && i < endBar && lastExitBar !== i) {
             const result = generateSignal(index1m, index5m, index15m, future1m, dailySlice);
 
             if (i % 200 === 0 && result.signal !== "NO_TRADE") {
@@ -226,7 +260,12 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
             }
 
             if (result.signal === "CE" || result.signal === "PE") {
-                const entryPrice = parseFloat(currentClose.toFixed(2));
+                // ✅ FIX #1: Entry price = NEXT bar's open (bar i+1)
+                const nextBar = alignedIndex[i + 1];
+                const entryPrice = parseFloat(nextBar.open.toFixed(2));
+                const entryTime = nextBar.time;
+                const entryBar = i + 1;
+
                 const sl = result.dynamicSL ?? slPoints;
                 const tgt = result.dynamicTGT ?? tgtPoints;
                 const slPrice = parseFloat((result.signal === "CE" ? entryPrice - sl : entryPrice + sl).toFixed(2));
@@ -235,22 +274,22 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
                 openTrade = {
                     type: result.signal,
                     entryPrice,
-                    entryTime: currentTime,
-                    entryBar: i,
+                    entryTime,
+                    entryBar,
                     sl: slPrice,
                     tgt: tgtPrice,
                 };
 
-                btLogger.info(
-                    `  Volume : ${result.volume}\n` +
-                    `  OI     : ${result.oi}\n` +
-                    `  ENTRY [${result.signal}] | bar[${i}] | Close: ${entryPrice.toFixed(2)} | ` +
-                    `SL: ${slPrice.toFixed(2)} (${sl.toFixed(2)}pts) | Tgt: ${tgtPrice.toFixed(2)} (${tgt.toFixed(2)}pts) | ` +
-                    `ADX: ${result.currentADX} | RSI: ${result.currentRSI} | ATR: ${result.currentATR} | ` +
-                    `Struct: Bull:${result.bullishStructure} Bear:${result.bearishStructure} | ` +
-                    `Gap: ${result.gapPoints}pts | ` +
-                    `IST: ${getISTTime(new Date(currentTime))}`
-                );
+                // btLogger.info(
+                //     `  Volume : ${result.volume}\n` +
+                //     `  OI     : ${result.oi}\n` +
+                //     `  ENTRY [${result.signal}] | signal@bar[${i}] | entry@bar[${entryBar}] | Open: ${entryPrice.toFixed(2)} | ` +
+                //     `SL: ${slPrice.toFixed(2)} (${sl.toFixed(2)}pts) | Tgt: ${tgtPrice.toFixed(2)} (${tgt.toFixed(2)}pts) | ` +
+                //     `ADX: ${result.currentADX} | RSI: ${result.currentRSI} | ATR: ${result.currentATR} | ` +
+                //     `Struct: Bull:${result.bullishStructure} Bear:${result.bearishStructure} | ` +
+                //     `Gap: ${result.gapPoints}pts | ` +
+                //     `IST: ${getISTTime(new Date(entryTime))}`
+                // );
             }
         }
     }

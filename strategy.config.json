@@ -7,7 +7,7 @@
     "ADX_MIN": 20,
     "ADX_CHOP": 18,
     "ATR_MIN": 40,
-    "ATR_SL_MULTIPLIER": 0.85,
+    "ATR_SL_MULTIPLIER": 0.95,
     "ATR_TGT_MULTIPLIER": 2.5,
     "ATR_SL_CAP": 90,
     "ATR_TGT_CAP": 300,

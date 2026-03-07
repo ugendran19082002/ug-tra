@@ -32,7 +32,6 @@ import { logger } from "./logger.js";
 const getBaseDiag = (indexLTP = "0.00", futureLTP = "0.00") => ({
     indexLTP,
     futureLTP,
-    spread: "0.00",
     dailyBias: "N/A",
     emaAbove: false,
     bullCandle: false,
@@ -134,7 +133,6 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     // INITIAL DIAGNOSTIC
     // ─────────────────────────────────────────
     const diag = getBaseDiag(last1m.close.toFixed(2), lastFuture.close.toFixed(2));
-    diag.spread = (lastFuture.close - last1m.close).toFixed(2);
     diag.warnings = [];
 
     diag.timeAllowed = minuteOfDay >= TIME_START && minuteOfDay <= TIME_END;

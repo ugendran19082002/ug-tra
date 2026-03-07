@@ -198,7 +198,7 @@ export async function marketExit(jwtToken, symbol) {
         const side = parseInt(p.netqty) > 0 ? "SELL" : "BUY";
 
         logger.info(`🚨 SENSEX INDEX EXIT TRIGGERED: Exiting ${symbol} Qty:${qty} Side:${side}`);
-        await sleep(1000); // Delay before position check
+        await sleep(500); // Delay before position check
 
         const body = {
             variety: "NORMAL",
@@ -266,9 +266,11 @@ export async function checkExitAndCleanup(jwtToken, symbol, params = {}) {
     const positions = await getPositions(jwtToken);
     const existing = positions.find(p => p.tradingsymbol === symbol && parseInt(p.netqty) !== 0);
 
-    // If netqty is 0 (or position doesn't exist), clean up any pending orders for that symbol
+    // If netqty is 0 (or position doesn't exist), broker's SL-M or Target order has already filled.
+    // Return true so the caller (handleLiveExit / polling loop) triggers onTradeExit() correctly.
     if (!existing) {
         await cleanupOrders(jwtToken, symbol);
+        return true;   // ✅ FIX: broker exit detected → triggers onTradeExit → unlocks _tradeLock
     }
 
     return false;
@@ -316,7 +318,7 @@ export async function executeOrder(jwt, signal) {
 
     // ── First, clean up any old pending orders for this symbol
     await cleanupOrders(jwt, symbol);
-    await sleep(1000); // Wait after cleanup before checking positions
+    await sleep(500); // Wait after cleanup before checking positions
 
     // ── Check if already in a position for this symbol
     const positions = await getPositions(jwt);
@@ -347,7 +349,7 @@ export async function executeOrder(jwt, signal) {
         return;
     }
 
-    await sleep(1000);
+    await sleep(500);
 
     // 2️⃣ Place SL-M Order (SELL to exit long)
     const slOrderId = await placeStopLossOrder(jwt, symbol, optionToken, optionSL, exitType, LOT_SIZE);

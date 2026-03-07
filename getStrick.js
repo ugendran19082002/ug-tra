@@ -46,8 +46,13 @@ export function getLastCompletedCandleTime(timeframe = 1) {
 export async function getATMOptionTokens(symbolName = "SENSEX", price, refDate = new Date()) {
     const res = await loadScripMaster();
 
-    const today = new Date(refDate);
-    today.setHours(0, 0, 0, 0);
+    // Use the real IST date as the filter boundary — never refDate.
+    // refDate is only for backtesting context; in live mode it can lag
+    // (it came from the last candle timestamp which may be minutes/days old).
+    // Using refDate here caused the bot to pick an already-expired weekly
+    // option because it evaluated "today" as the date of the last candle.
+    const nowIST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    nowIST.setHours(0, 0, 0, 0);
 
     const options = res
         .filter(i =>
@@ -56,7 +61,7 @@ export async function getATMOptionTokens(symbolName = "SENSEX", price, refDate =
             i.name === symbolName
         )
         .map(i => ({ ...i, expiryDate: parseExpiry(i.expiry) }))
-        .filter(i => i.expiryDate >= today);
+        .filter(i => i.expiryDate >= nowIST);   // always real IST today
 
     if (!options.length) {
         logger.error("❌ No options found");
@@ -123,4 +128,3 @@ export async function getLTP(jwtToken, exchangeTokens) {
         return [];
     }
 }
-
