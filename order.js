@@ -26,7 +26,7 @@ function jData(data) {
 }
 
 // Time check function to see if we are in market hours
-function isMarketOpen() {
+export function isMarketOpen() {
     const now = new Date();
     // Assuming machine is in IST timezone.
     const timeInMinutes = now.getHours() * 60 + now.getMinutes();
