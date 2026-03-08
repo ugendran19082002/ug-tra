@@ -142,6 +142,8 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
     const trades = [];
     let openTrade = null;
     let lastExitBar = -1; // ✅ FIX #3 — prevent same-bar re-entry after exit
+    let sessionState = { consecutiveLosses: 0 };
+    let currentWorkingDay = null;
 
     // Suppress debug logs during backtest loop
     const origLevel = logger.level;
@@ -153,6 +155,12 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
         const index1m = alignedIndex.slice(0, i + 1);
         const future1m = alignedFuture.slice(0, i + 1);
         const currentTime = index1m[index1m.length - 1].time;
+
+        const currentDate = new Date(currentTime).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+        if (currentDate !== currentWorkingDay) {
+            currentWorkingDay = currentDate;
+            sessionState.consecutiveLosses = 0;
+        }
 
         const index5m = index5mAll.filter(c => c.time <= currentTime);
         const index15m = index15mAll.filter(c => c.time <= currentTime);
@@ -208,6 +216,12 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
             }
 
             if (exitReason) {
+                if (exitReason === "SL") {
+                    sessionState.consecutiveLosses++;
+                } else if (exitReason === "TGT" || exitReason === "EOD") {
+                    sessionState.consecutiveLosses = 0;
+                }
+
                 const pnl = openTrade.type === "CE"
                     ? exitPrice - openTrade.entryPrice
                     : openTrade.entryPrice - exitPrice;
@@ -251,7 +265,7 @@ export async function backtest(jwt, futureToken, btFrom, btTo, options = {}) {
         // So we DETECT signals at bar i but STORE them for entry on bar i+1.
         // ✅ FIX #3 — Skip entry if we just exited this same bar (lastExitBar === i)
         if (!openTrade && i < endBar && lastExitBar !== i) {
-            const result = generateSignal(index1m, index5m, index15m, future1m, dailySlice);
+            const result = generateSignal(index1m, index5m, index15m, future1m, dailySlice, sessionState);
 
             if (i % 200 === 0 && result.signal !== "NO_TRADE") {
                 btLogger.info(

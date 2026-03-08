@@ -50,6 +50,16 @@ async function cachedFetch(cacheKey, tfLabel, fetchFn) {
 }
 
 // ─────────────────────────────────────────
+// Live session state — persists across loop ticks
+// Updated by onTradeExit(), reset by maybeDailyReset()
+// ─────────────────────────────────────────
+const _liveSessionState = {
+    consecutiveLosses: 0,
+    tradesToday: 0,
+    lastTradeMinute: -999,
+};
+
+// ─────────────────────────────────────────
 // Daily reset tracker
 // ─────────────────────────────────────────
 let _lastResetDay = null;
@@ -58,6 +68,10 @@ function maybeDailyReset() {
     if (_lastResetDay !== today) {
         _lastResetDay = today;
         resetDaily();
+        // ✅ Reset consecutive loss counter on new trading day
+        _liveSessionState.consecutiveLosses = 0;
+        _liveSessionState.tradesToday = 0;
+        _liveSessionState.lastTradeMinute = -999;
     }
 }
 
@@ -182,13 +196,13 @@ export async function entryEngine(jwt, fromdate, todate, futureToken) {
             logger.debug(`🧵 Worker Thread: done (warnings: ${workerResult.warnings.join(",") || "none"})`);
             // Fall through to generateSignal which re-uses full data sets
             // (worker pre-validates; actual signal struct built in main thread)
-            r = generateSignal(index1m, index5m, index15m, future1m, data1D);
+            r = generateSignal(index1m, index5m, index15m, future1m, data1D, _liveSessionState);
         } catch (err) {
             logger.warn(`⚠ Worker Thread failed (${err.message}) — falling back to inline`);
-            r = generateSignal(index1m, index5m, index15m, future1m, data1D);
+            r = generateSignal(index1m, index5m, index15m, future1m, data1D, _liveSessionState);
         }
     } else {
-        r = generateSignal(index1m, index5m, index15m, future1m, data1D);
+        r = generateSignal(index1m, index5m, index15m, future1m, data1D, _liveSessionState);
     }
 
     logger.info(`📍 LTP → Index:${r.indexLTP}  Fut:${r.futureLTP} Bias:${r.dailyBias}  Signal:${r.signal}`);
@@ -388,4 +402,13 @@ export function onTradeExit(pnl, reason = "UNKNOWN", exitPrice = NaN) {
     recordTrade(pnl);
     _tradeLock = false;   // ✅ Unlock: bot can accept a new entry now
     logger.info(`📊 Trade closed: ${reason} | PnL: ${pnl > 0 ? "+" : ""}${pnl}`);
+
+    // ── Update consecutive loss counter for circuit breaker
+    if (reason === "SL") {
+        _liveSessionState.consecutiveLosses++;
+        logger.warn(`⚠ Consecutive losses: ${_liveSessionState.consecutiveLosses}/${process.env.MAX_CONSEC_LOSS ?? 3}`);
+    } else if (reason === "TGT" || reason === "EOD") {
+        _liveSessionState.consecutiveLosses = 0; // win/EOD resets streak
+    }
+    _liveSessionState.tradesToday++;
 }

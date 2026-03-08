@@ -221,7 +221,7 @@ export function calculateOptionLevels({
     indexSL,
     indexTarget,
     optionLTP,
-    delta = 0.80,
+    delta = 0.75,
     gamma = 0.0005,
 }) {
     // 1️⃣ Index Moves

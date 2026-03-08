@@ -29,8 +29,10 @@ async function main() {
     if (isBacktest) {
         logger.info("🧪 BACKTEST MODE");
 
+        // const btFrom = getTodayFromDate(66);
         const btFrom = getTodayFromDate(29);
-        const btTo = formatISTDateTime();
+        // const btTo = formatISTDateTime();
+        const btTo = "2026-03-08 15:30";
         // const btTo = "2026-02-01 15:30";
         logger.info(`📅 Window: ${btFrom} → ${btTo}`);
 

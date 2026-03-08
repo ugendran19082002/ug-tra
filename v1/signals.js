@@ -192,8 +192,9 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     const vwapArr = calculateVWAP(future1m);
     const currentVWAP = vwapArr[vwapArr.length - 1];
     diag.vwap = currentVWAP !== null ? parseFloat(currentVWAP.toFixed(2)) : null;
-    diag.aboveVWAP = currentVWAP !== null && lastFuture.close > currentVWAP;
-    diag.belowVWAP = currentVWAP !== null && lastFuture.close < currentVWAP;
+    const VWAP_TOLERANCE = 10;
+    diag.aboveVWAP = currentVWAP !== null && lastFuture.close > currentVWAP - VWAP_TOLERANCE;
+    diag.belowVWAP = currentVWAP !== null && lastFuture.close < currentVWAP + VWAP_TOLERANCE;
 
     // ─────────────────────────────────────────
     // 5M TREND + INDICATORS
@@ -291,8 +292,14 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     const prevHigh = Math.max(...prevCandles.map(c => c.high));  // ✅ renamed from max5High
     const prevLow = Math.min(...prevCandles.map(c => c.low));   // ✅ renamed from min5Low
 
-    diag.breakUp = last1m.close > prevHigh;
-    diag.breakDown = last1m.close < prevLow;
+    diag.breakUp = last1m.high > prevHigh;
+    diag.breakDown = last1m.low < prevLow;
+
+    const momentumUp = last1m.close > prev1m.high;
+    const momentumDown = last1m.close < prev1m.low;
+
+    const microPullbackUp = diag.trendUp && prev1m.close < prev1m.open && last1m.close > last1m.open;
+    const microPullbackDown = diag.trendDown && prev1m.close > prev1m.open && last1m.close < last1m.open;
 
 
     // ─────────────────────────────────────────
@@ -359,8 +366,8 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     // NOTE: bullishStructure / bearishStructure (15m HH/HL, LH/LL) are embedded here.
     // Trend setups downstream do NOT need to re-check them — trendAligned is the gate.
     diag.trendAligned =
-        (diag.dailyBias === "BULLISH" && diag.trendUp && diag.bullishStructure) ||
-        (diag.dailyBias === "BEARISH" && diag.trendDown && diag.bearishStructure);
+        (diag.dailyBias === "BULLISH" && diag.trendUp) ||
+        (diag.dailyBias === "BEARISH" && diag.trendDown);
 
     if (!diag.trendAligned) {
         return { signal: "NO_TRADE", reason: "multi_tf_misaligned", ...diag };
@@ -369,33 +376,44 @@ export function generateSignal(index1m, index5m, index15m, future1m, data1D) {
     // ── PRO FILTER #5 — BREAKOUT STRENGTH ───
     // Real breakout must have big candle + strong body + volume
     diag.breakoutStrong =
-        diag.bigCandle &&
         diag.strongBody &&
-        diag.volConfirm;
+        (diag.volConfirm || diag.bigCandle);
 
     // ── Priority 3: TREND CONTINUATION ──────
     // FIX #8 — Gap guard extended: if gap fills intraday, allow trend
     const gapDownFilled = diag.gapDown && last5m.close < prevDay.close;
     const gapUpFilled = diag.gapUp && last5m.close > prevDay.close;
 
+    const gapDownAllowed = diag.gapDown && currentADX > 25;
+    const gapUpAllowed = diag.gapUp && currentADX > 25;
+
+    const pullbackShort = diag.dailyBias === "BEARISH" && diag.trendDown && currentRSI < 50 && (last1m.high >= (ema5m[ema5m.length - 1] || 0));
+    const pullbackLong = diag.dailyBias === "BULLISH" && diag.trendUp && currentRSI > 50 && (last1m.low <= (ema5m[ema5m.length - 1] || Infinity));
+
+    const continuationShort = diag.trendStrong && currentRSI < 40;
+    const continuationLong = diag.trendStrong && currentRSI > 60;
+
     const bearishTrendSetup =
         diag.dailyBias === "BEARISH" &&
-        diag.trendStrong &&
-        diag.rsiBearish &&
-        (diag.trendDown || diag.breakoutStrong) &&   // ✅ breakoutStrong wired in (bigCandle+strongBody+vol)
-        !(diag.gapDown && !diag.breakDown && !gapDownFilled) && // ✅ FIX #8
-        diag.volConfirm &&
-        diag.belowVWAP   // ✅ PRO — institutional bias confirmation
-
+        !(diag.gapDown && !diag.breakDown && !gapDownFilled && !gapDownAllowed) &&
+        diag.belowVWAP &&
+        (
+            (diag.trendStrong && diag.rsiBearish && (diag.trendDown || diag.breakoutStrong) && (diag.volConfirm || diag.bigCandle)) ||
+            (pullbackShort) ||
+            (continuationShort) ||
+            (microPullbackDown && momentumDown)
+        );
 
     const bullishTrendSetup =
         diag.dailyBias === "BULLISH" &&
-        diag.trendStrong &&
-        diag.rsiBullish &&
-        (diag.trendUp || diag.breakoutStrong) &&     // ✅ breakoutStrong wired in (bigCandle+strongBody+vol)
-        !(diag.gapUp && !diag.breakUp && !gapUpFilled) &&       // ✅ FIX #8
-        diag.volConfirm &&
-        diag.aboveVWAP   // ✅ PRO — institutional bias confirmation
+        !(diag.gapUp && !diag.breakUp && !gapUpFilled && !gapUpAllowed) &&
+        diag.aboveVWAP &&
+        (
+            (diag.trendStrong && diag.rsiBullish && (diag.trendUp || diag.breakoutStrong) && (diag.volConfirm || diag.bigCandle)) ||
+            (pullbackLong) ||
+            (continuationLong) ||
+            (microPullbackUp && momentumUp)
+        );
 
 
     if (bearishTrendSetup) {
