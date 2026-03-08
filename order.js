@@ -463,6 +463,10 @@ export async function executeOrder(jwt, signal) {
         logger.warn("⚠ executeOrder: missing token or LTP — skipping order");
         return;
     }
+    if (!isMarketOpen()) {
+        logger.warn(`⚠ executeOrder: Market closed (IST ${new Date().getHours()}:${String(new Date().getMinutes()).padStart(2, "0")}) — skipping order`);
+        return;
+    }
 
     const symbol = optionSymbol;
 
@@ -478,6 +482,7 @@ export async function executeOrder(jwt, signal) {
         logger.warn(`⚠ executeOrder: Already in position for ${symbol} (Qty: ${existing.qty}) — skipping entry`);
         return;
     }
+
 
     // ── Calculate Option SL & Target (Prioritize pre-calculated model points)
     const slPts = parseFloat(signal.optionSL ?? signal.slPoints);

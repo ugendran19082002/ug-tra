@@ -31,8 +31,8 @@ async function main() {
 
         // const btFrom = getTodayFromDate(66);
         const btFrom = getTodayFromDate(29);
-        // const btTo = formatISTDateTime();
-        const btTo = "2026-03-08 15:30";
+        const btTo = formatISTDateTime();
+        // const btTo = "2026-03-08 15:30";
         // const btTo = "2026-02-01 15:30";
         logger.info(`📅 Window: ${btFrom} → ${btTo}`);
 
@@ -161,9 +161,9 @@ async function main() {
             // The old formatCurrentDateTime() used getHours() which is LOCAL time
             // (UTC on most servers), making todate 5:30h behind — API returns no data.
             const liveFrom = getTodayFromDate(29);
-            const liveTo = formatISTDateTime();
+            // const liveTo = formatISTDateTime();
             // const liveTo = process.env.LIVE_TO_DATE || formatCurrentDateTime();
-            // const liveTo = "2026-03-06 14:42";
+            const liveTo = "2026-03-06 14:33";
             const futureToken = await getFutureToken(process.env.INDEX_SYMBOL || "SENSEX", liveTo);
 
             const windowKey = `${liveFrom}_${liveTo}`;
