@@ -17,7 +17,7 @@ const USE_WEBSOCKET = process.env.USE_WEBSOCKET === "true";
 // AngelOne takes a few seconds to reflect the BUY in netqty — without this
 // guard, the poll fires in the same loop tick and sees netqty=0, immediately
 // false-closing the brand new position.
-const BROKER_SETTLE_MS = parseInt(process.env.BROKER_SETTLE_MS ?? "10000"); // default 30s
+const BROKER_SETTLE_MS = parseInt(process.env.BROKER_SETTLE_MS ?? "10000"); // default 10s
 
 // ─────────────────────────────────────────
 // MAIN
@@ -31,6 +31,7 @@ async function main() {
 
         const btFrom = getTodayFromDate(29);
         const btTo = formatISTDateTime();
+        // const btTo = "2026-02-01 15:30";
         logger.info(`📅 Window: ${btFrom} → ${btTo}`);
 
         const jwt = await login();
@@ -158,9 +159,9 @@ async function main() {
             // The old formatCurrentDateTime() used getHours() which is LOCAL time
             // (UTC on most servers), making todate 5:30h behind — API returns no data.
             const liveFrom = getTodayFromDate(29);
-            // const liveTo = formatISTDateTime();
+            const liveTo = formatISTDateTime();
             // const liveTo = process.env.LIVE_TO_DATE || formatCurrentDateTime();
-            const liveTo = "2026-03-06 14:42";
+            // const liveTo = "2026-03-06 14:42";
             const futureToken = await getFutureToken(process.env.INDEX_SYMBOL || "SENSEX", liveTo);
 
             const windowKey = `${liveFrom}_${liveTo}`;

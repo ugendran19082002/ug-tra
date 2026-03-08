@@ -1,0 +1,20 @@
+{
+    "_comment": "Strategy tuning parameters — change values here, no code edits needed",
+    "TIME_START_MIN": 560,
+    "TIME_END_MIN": 900,
+    "DAILY_EMA_PERIOD": 20,
+    "GAP_THRESHOLD": 150,
+    "ADX_MIN": 20,
+    "ADX_CHOP": 18,
+    "ADX_SPIKE_MIN": 45,
+    "ATR_MIN": 25,
+    "ATR_SL_MULTIPLIER": 0.95,
+    "ATR_TGT_MULTIPLIER": 2.5,
+    "ATR_SL_CAP": 90,
+    "ATR_TGT_CAP": 360,
+    "RSI_BULL_MIN": 55,
+    "RSI_BEAR_MAX": 45,
+    "STRONG_BODY_RATIO": 0.6,
+    "BIG_CANDLE_MULT": 1.5,
+    "MAX_CONSECUTIVE_LOSS": 3
+}
